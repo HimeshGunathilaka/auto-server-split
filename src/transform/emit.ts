@@ -38,6 +38,8 @@ export type EmitInput = {
   originalSpecifier: string;
   /** Rewrites a relative specifier of the original file so it works from the island file. */
   rebaseSpecifier: (specifier: string) => string;
+  /** Non-exported, fully interactive components that move wholesale into the island file. */
+  movedComponents?: ModuleDecl[];
 };
 
 export type EmitOutput = { serverText: string; islandText: string; islands: IslandPlan[] };
@@ -144,12 +146,18 @@ export function emitSplit(input: EmitInput): Outcome<EmitOutput> {
   ]);
   const collector = new TypeRefCollector(sf, checker, imports, shape.moduleDecls, islandContent);
   const valueImports = new Set<ImportBinding>();
-  const copiedDecls = new Set<ModuleDecl>();
+  const movedComponents = input.movedComponents ?? [];
+  const copiedDecls = new Set<ModuleDecl>(movedComponents);
+  for (const decl of movedComponents) islandContent.push(decl.statement);
   for (const island of islands) {
     island.valueImports.forEach((b) => valueImports.add(b));
     island.moduleDecls.forEach((d) => copiedDecls.add(d));
   }
-  // Values referenced by copied module declarations.
+  // Values referenced by copied module declarations (helpers, constants and whole components).
+  const allDecls = [...shape.moduleDecls, ...shape.componentDecls.values()];
+  for (const decl of copiedDecls)
+    if (decl.component && !islandContent.includes(decl.statement))
+      islandContent.push(decl.statement);
   const declQueue = [...copiedDecls];
   while (declQueue.length > 0) {
     const decl = declQueue.pop() as ModuleDecl;
@@ -164,9 +172,10 @@ export function emitSplit(input: EmitInput): Outcome<EmitOutput> {
       }
       const d = symbol.declarations?.[0];
       if (!d || d.getSourceFile() !== sf || containsRange(decl.statement, d)) return;
-      const other = shape.moduleDecls.find((m) => containsRange(m.statement, d));
+      const other = allDecls.find((m) => containsRange(m.statement, d));
       if (other && !copiedDecls.has(other)) {
         copiedDecls.add(other);
+        if (other.component) islandContent.push(other.statement);
         declQueue.push(other);
       } else if (!other) {
         failure = `copied helper refers to \`${id.text}\`, which can't be moved`;
@@ -232,6 +241,17 @@ export function emitSplit(input: EmitInput): Outcome<EmitOutput> {
     }
     const members: string[] = [];
     for (const prop of island.props) {
+      if (prop.picked) {
+        const result = collector.collectFromPrinted(prop.picked.typeText, island.root.node);
+        if ("message" in result)
+          return skip(
+            "unsupported-pattern",
+            `prop \`${prop.name}\`: ${result.message}`,
+            locOf(ctx, prop.refNode),
+          );
+        members.push(`${prop.name}: ${result.text}`);
+        continue;
+      }
       const printed = checker.typeToString(
         prop.type,
         island.root.node,
@@ -310,10 +330,15 @@ export function emitSplit(input: EmitInput): Outcome<EmitOutput> {
   }
 
   const blocks: string[] = [islandLines.join("\n")];
-  for (const decl of shape.moduleDecls) {
+  const moved = new Set(movedComponents);
+  for (const decl of [...allDecls].sort(
+    (a, b) => a.statement.getStart(sf) - b.statement.getStart(sf),
+  )) {
     if (!allCopied.has(decl)) continue;
-    const range = statementLineRange(sf, decl.statement);
-    blocks.push(text.slice(range.start, decl.statement.getEnd()).replace(/^\s*\n/, ""));
+    let declText = statementSource(decl.statement, sf);
+    if (decl.component) declText = withoutExportModifiers(decl.statement, sf);
+    if (moved.has(decl)) declText = `export ${declText}`;
+    blocks.push(declText);
   }
 
   for (const island of islands) {
@@ -344,8 +369,14 @@ export function emitSplit(input: EmitInput): Outcome<EmitOutput> {
     start: i.root.node.getStart(sf),
     end: i.root.node.getEnd(),
   }));
+  // Slots are re-emitted in the server file, so references inside them still count there.
+  const keptInside: Range[] = slotNodes.map((n) => ({ start: n.getStart(sf), end: n.getEnd() }));
   const moduleRemovals = new Set<ModuleDecl>();
   for (const plan of plans) plan.movedModuleDecls.forEach((d) => moduleRemovals.add(d));
+  // Wholesale components leave the server file and are imported back from the island file.
+  for (const decl of movedComponents) {
+    removed.push(collapseBlankLines(text, statementLineRange(sf, decl.statement)));
+  }
   const baseRemoved = () => [
     ...removed,
     ...replacedRoots,
@@ -354,15 +385,15 @@ export function emitSplit(input: EmitInput): Outcome<EmitOutput> {
   for (let changed = true; changed;) {
     changed = false;
     for (const decl of allCopied) {
-      if (moduleRemovals.has(decl) || decl.exported) continue;
-      if (!isReferencedOutside(decl, sf, checker, baseRemoved())) {
+      if (moduleRemovals.has(decl) || decl.exported || moved.has(decl)) continue;
+      if (!isReferencedOutside(decl, sf, checker, baseRemoved(), keptInside)) {
         moduleRemovals.add(decl);
         changed = true;
       }
     }
   }
   for (const decl of moduleRemovals) {
-    if (isReferencedOutside(decl, sf, checker, baseRemoved())) {
+    if (isReferencedOutside(decl, sf, checker, baseRemoved(), keptInside)) {
       return skip(
         "unsupported-pattern",
         `client-only helper ${decl.names.join(", ")} is still used by the server part`,
@@ -374,7 +405,6 @@ export function emitSplit(input: EmitInput): Outcome<EmitOutput> {
 
   // Imports: keep only what the server part still references.
   const allRemoved = [...removed, ...replacedRoots];
-  const keptInside: Range[] = slotNodes.map((n) => ({ start: n.getStart(sf), end: n.getEnd() }));
   const keyRanges: Range[] = islands.flatMap((i) =>
     i.keyAttr ? [{ start: i.keyAttr.getStart(sf), end: i.keyAttr.getEnd() }] : [],
   );
@@ -433,7 +463,8 @@ export function emitSplit(input: EmitInput): Outcome<EmitOutput> {
   for (const island of islands) {
     const attrs: string[] = [];
     if (island.keyAttr) attrs.push(island.keyAttr.getText(sf));
-    for (const prop of island.props) attrs.push(`${prop.name}={${prop.name}}`);
+    for (const prop of island.props)
+      attrs.push(`${prop.name}={${prop.picked ? prop.picked.serverExpr : prop.name}}`);
     const rootStart = island.root.node.getStart(sf);
     const slotIndent = indentationOfLine(text, rootStart) + style.indent;
     const slotSource = (node: ts.Node) => {
@@ -455,7 +486,19 @@ export function emitSplit(input: EmitInput): Outcome<EmitOutput> {
     ms.overwrite(rootStart, island.root.node.getEnd(), usage);
   }
 
-  const importLine = `import { ${islands.map((i) => i.name).join(", ")} } from ${q}${input.islandSpecifier}${q}${semi}`;
+  for (const decl of movedComponents) {
+    const r = collapseBlankLines(text, statementLineRange(sf, decl.statement));
+    ms.remove(r.start, r.end);
+  }
+  const importedBack = movedComponents
+    .filter((decl) =>
+      isReferencedOutside(decl, sf, checker, [...removed, ...replacedRoots], keptInside),
+    )
+    .flatMap((decl) => decl.names);
+  const importNames = [...islands.map((i) => i.name), ...importedBack];
+  if (importNames.length === 0)
+    return skip("unsupported-pattern", "nothing would be imported from the island file");
+  const importLine = `import { ${importNames.join(", ")} } from ${q}${input.islandSpecifier}${q}${semi}`;
   const firstImport = imports.declarations[0];
   if (lastKeptImport) ms.appendLeft(lastKeptImport.getEnd(), `\n${importLine}`);
   else if (firstImport) {
@@ -468,6 +511,30 @@ export function emitSplit(input: EmitInput): Outcome<EmitOutput> {
   }
 
   return ok({ serverText: ms.toString(), islandText, islands });
+}
+
+function statementSource(statement: ts.Statement, sf: ts.SourceFile): string {
+  const range = statementLineRange(sf, statement);
+  return sf.text.slice(range.start, statement.getEnd()).replace(/^\s*\n/, "");
+}
+
+/** Statement text (with leading comments) minus `export` / `export default`. */
+function withoutExportModifiers(statement: ts.Statement, sf: ts.SourceFile): string {
+  const range = statementLineRange(sf, statement);
+  const base = range.start;
+  const ms = new MagicString(sf.text.slice(base, statement.getEnd()));
+  const modifiers = ts.canHaveModifiers(statement) ? (ts.getModifiers(statement) ?? []) : [];
+  for (const modifier of modifiers) {
+    if (
+      modifier.kind !== ts.SyntaxKind.ExportKeyword &&
+      modifier.kind !== ts.SyntaxKind.DefaultKeyword
+    )
+      continue;
+    let end = modifier.getEnd();
+    while (/\s/.test(sf.text[end] ?? "")) end++;
+    ms.remove(modifier.getStart(sf) - base, end - base);
+  }
+  return ms.toString().replace(/^\s*\n/, "");
 }
 
 function isNeutralModule(binding: ImportBinding): boolean {
@@ -502,6 +569,7 @@ function isReferencedOutside(
   sf: ts.SourceFile,
   checker: ts.TypeChecker,
   removed: Range[],
+  kept: Range[] = [],
 ): boolean {
   const symbols = new Set<ts.Symbol>();
   for (const name of decl.names) {
@@ -523,7 +591,8 @@ function isReferencedOutside(
   forEachIdentifier(sf, (id) => {
     if (found) return;
     if (containsRange(decl.statement, id)) return;
-    if (inAny(removed, id.getStart(sf))) return;
+    const pos = id.getStart(sf);
+    if (inAny(removed, pos) && !inAny(kept, pos)) return;
     const symbol = symbolOfRef(checker, id);
     if (symbol && symbols.has(symbol)) found = true;
   });

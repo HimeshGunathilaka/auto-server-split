@@ -1,5 +1,6 @@
 import { ts } from "ts-morph";
 import type { ComponentInfo, FileShape, ModuleDecl } from "./components.js";
+import { componentDeclarationNode } from "./components.js";
 import type { AnalysisContext } from "./context.js";
 import { locOf } from "./context.js";
 import { hasUseServerBody } from "./directives.js";
@@ -15,6 +16,8 @@ import {
   symbolOfRef,
   tagNameText,
 } from "./refs.js";
+import type { PickedProp } from "./mongoose.js";
+import { isMongooseLike, pickMongooseFields } from "./mongoose.js";
 import { checkSerializable, isCallableType } from "./serializable.js";
 import type { Outcome, Skip } from "./skip.js";
 import { ok, skip } from "./skip.js";
@@ -52,7 +55,7 @@ export type Origin =
   | { kind: "local"; symbol: ts.Symbol; unit: Unit }
   | { kind: "inner"; symbol: ts.Symbol; declaration: ts.Declaration }
   | { kind: "module"; symbol: ts.Symbol; decl: ModuleDecl }
-  | { kind: "component"; symbol: ts.Symbol }
+  | { kind: "component"; symbol: ts.Symbol; component: ComponentInfo }
   | { kind: "import"; binding: ImportBinding; usage: UsageClass }
   | { kind: "browser-global"; name: string }
   | { kind: "global" }
@@ -64,6 +67,8 @@ export type PropInfo = {
   type: ts.Type;
   /** A reference inside the island, used as the location for type printing and narrowing. */
   refNode: ts.Identifier;
+  /** Mongoose/ObjectId values: only the fields the island reads, built on the server. */
+  picked?: PickedProp;
 };
 
 export type IslandPlan = {
@@ -164,6 +169,8 @@ export function islandBaseName(componentName: string, rootTag: string): string {
 export type PlanOptions = {
   /** Component props that every importer passes a Server Action for (see checkImporters). */
   serverActionProps?: ReadonlySet<string>;
+  /** Other components of the file that move wholesale into the island file (client references). */
+  wholesale?: ReadonlySet<ComponentInfo>;
 };
 
 export function planComponent(
@@ -348,7 +355,13 @@ export function planComponent(
         if (unit) return { kind: "local", symbol, unit };
         if (containsRange(fn, declaration)) return { kind: "inner", symbol, declaration };
         const top = topLevelStatement(declaration);
-        if (top && componentStatements.has(top)) return { kind: "component", symbol };
+        if (top && componentStatements.has(top)) {
+          const target = shape.components.find((c) => c.statement === top);
+          if (target && componentDeclarationNode(target) === declaration)
+            return { kind: "component", symbol, component: target };
+          // A name declared inside another component of the file (its params, locals).
+          return { kind: "inner", symbol, declaration };
+        }
         const decl = top ? moduleDeclByStatement.get(top) : undefined;
         if (decl) return { kind: "module", symbol, decl };
         return { kind: "unknown" };
@@ -395,7 +408,10 @@ export function planComponent(
         unit.markers.push({
           kind: "client-import",
           node: id,
-          detail: "recursive component reference",
+          detail:
+            origin.component === component
+              ? "recursive component reference"
+              : `component ${id.text} used as a value`,
         });
     });
     for (const marker of unit.markers) {
@@ -573,11 +589,16 @@ export function planComponent(
           if (tagClass === "client")
             reasons.push(`<${tag.getText(sf)}> is built from client-only code`);
         } else if (origin.kind === "component") {
-          return skip(
-            "unsupported-pattern",
-            `${component.name} renders itself recursively`,
-            locOf(ctx, tag),
-          );
+          if (origin.component === component) {
+            return skip(
+              "unsupported-pattern",
+              `${component.name} renders itself recursively`,
+              locOf(ctx, tag),
+            );
+          }
+          // Another component of this file: a client reference if it moves to the island file,
+          // otherwise it stays a Server Component next to this one.
+          tagClass = options.wholesale?.has(origin.component) ? "client-reference" : "server";
         } else {
           tagClass = "client";
           reasons.push(`<${tag.getText(sf)}> can't be proven server-safe`);
@@ -962,7 +983,7 @@ export function planComponent(
           !(origin.usage.cls === "client-reference" && isTagRef(id))) ||
         origin.kind === "browser-global" ||
         origin.kind === "unknown" ||
-        origin.kind === "component"
+        (origin.kind === "component" && !isTagRef(id))
       ) {
         clientRead = true;
       }
@@ -1099,6 +1120,12 @@ export function planComponent(
           }
           case "inner":
             if (inIsland(origin.declaration)) return;
+            if (
+              [...moduleLevelScopes].some((scopeNode) =>
+                containsRange(scopeNode, origin.declaration),
+              )
+            )
+              return;
             failure = addProp(id, origin.symbol);
             return;
           case "module": {
@@ -1130,13 +1157,33 @@ export function planComponent(
             }
             valueImports.add(origin.binding);
             return;
-          case "component":
-            failure = {
-              code: "unsupported-pattern",
-              message: "an island would reference the component itself",
-              location: locOf(ctx, id),
-            };
+          case "component": {
+            const target = origin.component;
+            if (target === component) {
+              failure = {
+                code: "unsupported-pattern",
+                message: "an island would reference the component itself",
+                location: locOf(ctx, id),
+              };
+              return;
+            }
+            if (!isTagRef(id)) {
+              failure = {
+                code: "unsupported-pattern",
+                message: `an island uses the component ${id.text} as a value`,
+                location: locOf(ctx, id),
+              };
+              return;
+            }
+            if (options.wholesale?.has(target)) return; // lives in the island file already
+            // A server-safe component rendered inside an island: copy it into the island file.
+            const decl = shape.componentDecls.get(target);
+            if (!decl || moduleDecls.has(decl)) return;
+            moduleDecls.add(decl);
+            moduleLevelScopes.add(decl.statement);
+            pending.push(decl.statement);
             return;
+          }
           case "browser-global":
           case "global":
             return;
@@ -1156,6 +1203,36 @@ export function planComponent(
     for (const prop of props.values()) {
       if (serverActionParams.has(prop.symbol)) continue; // a Server Action reference crosses as-is
       const verdict = checkSerializable(checker, prop.type, { primitivesOnly: ctx.isJs });
+      if (
+        !verdict.ok &&
+        !ctx.isJs &&
+        ctx.config.mongoose.autoSerialize &&
+        isMongooseLike(checker, prop.type)
+      ) {
+        const refs: ts.Identifier[] = [];
+        for (const scope of [rootNode, ...[...islandUnits].map((u) => u.node)]) {
+          forEachValueRef(scope, (id) => {
+            if ((keyAttr && containsRange(keyAttr, id)) || inSlot(id)) return;
+            if (symbolOfRef(checker, id) === prop.symbol) refs.push(id);
+          });
+        }
+        const picked = pickMongooseFields(checker, prop.name, refs, (t) =>
+          checker.typeToString(
+            t,
+            rootNode,
+            ts.TypeFormatFlags.NoTruncation | ts.TypeFormatFlags.UseAliasDefinedOutsideCurrentScope,
+          ),
+        );
+        if (picked.ok) {
+          prop.picked = picked.value;
+          continue;
+        }
+        return skip(
+          "non-serializable-prop",
+          `\`${prop.name}\` holds Mongoose/ObjectId data and the island ${picked.reason}`,
+          locOf(ctx, prop.refNode),
+        );
+      }
       if (!verdict.ok) {
         const typeText = checker.typeToString(prop.type, rootNode, ts.TypeFormatFlags.NoTruncation);
         const usedInSpread = isSpreadInside(rootNode, prop.symbol, checker);

@@ -9,8 +9,10 @@ import { locOf } from "./analysis/context.js";
 import type { FrameworkAdapter } from "./analysis/framework.js";
 import { buildImportTable } from "./analysis/importTable.js";
 import { checkImporters } from "./analysis/importers.js";
+import type { ComponentInfo } from "./analysis/components.js";
 import type { ComponentPlan } from "./analysis/islands.js";
 import { planComponent } from "./analysis/islands.js";
+import { tagNameText } from "./analysis/refs.js";
 import { ModuleSafety } from "./analysis/moduleSafety.js";
 import type { Outcome, Skip } from "./analysis/skip.js";
 import { ok, skip } from "./analysis/skip.js";
@@ -285,27 +287,71 @@ async function planFile(run: RunContext, file: string): Promise<Outcome<Planned>
 
   const shape = analyzeFileShape(ctx, facts);
   if (!shape.ok) return shape;
-  if (shape.value.components.length > 1) {
+  const components = shape.value.components;
+  const importerCheck = checkImporters(program, graph, file, components);
+  if (!importerCheck.ok) return importerCheck;
+
+  // Plan every component. A non-exported helper component that is entirely interactive moves
+  // wholesale into the island file; other components may then render it as a client reference,
+  // so planning repeats until the set of moved components is stable.
+  const wholesale = new Set<ComponentInfo>();
+  let plans: ComponentPlan[] = [];
+  let unchanged: ComponentInfo[] = [];
+  for (let pass = 0; pass <= components.length; pass++) {
+    plans = [];
+    unchanged = [];
+    let grew = false;
+    for (const component of components) {
+      if (wholesale.has(component)) continue;
+      const plan = planComponent(ctx, facts, shape.value, component, {
+        serverActionProps: importerCheck.value.serverActionProps,
+        wholesale,
+      });
+      if (plan.ok) {
+        plans.push(plan.value);
+        continue;
+      }
+      const code = plan.skip.code;
+      if (code === "no-islands") {
+        unchanged.push(component);
+        continue;
+      }
+      const movable =
+        (code === "fully-interactive" || code === "state-spans-component") &&
+        component.exported === "none" &&
+        components.length > 1;
+      if (movable) {
+        wholesale.add(component);
+        grew = true;
+        continue;
+      }
+      const prefix = components.length > 1 ? `${component.name}: ` : "";
+      return { ok: false, skip: { ...plan.skip, message: `${prefix}${plan.skip.message}` } };
+    }
+    if (!grew) break;
+  }
+  if (plans.length === 0 && wholesale.size === 0) {
     return skip(
-      "unsupported-pattern",
-      `declares ${shape.value.components.length} components (${shape.value.components.map((c) => c.name).join(", ")}); multiple components per file are supported from v0.4`,
+      "no-islands",
+      `${components.map((c) => c.name).join(", ")} ${components.length === 1 ? "uses" : "use"} no client-only features; removing "use client" may be enough (not done automatically in v1)`,
+    );
+  }
+  if (components.every((c) => wholesale.has(c) || c.exported === "none") && plans.length === 0) {
+    return skip(
+      "fully-interactive",
+      "every component in the file is interactive; nothing would stay on the server",
     );
   }
 
-  const importerCheck = checkImporters(program, graph, file, shape.value.components);
-  if (!importerCheck.ok) return importerCheck;
-
-  const plans: ComponentPlan[] = [];
-  for (const component of shape.value.components) {
-    const plan = planComponent(ctx, facts, shape.value, component, {
-      serverActionProps: importerCheck.value.serverActionProps,
-    });
-    if (!plan.ok) return plan;
-    plans.push(plan.value);
-  }
-  const jsxTotal = plans.reduce((n, p) => n + p.jsxTotal, 0);
-  const staticRatio =
-    jsxTotal === 0 ? 0 : plans.reduce((n, p) => n + p.staticRatio * p.jsxTotal, 0) / jsxTotal;
+  const jsxCounts = (c: ComponentInfo) => countJsx(c.fn);
+  const jsxTotal =
+    plans.reduce((n, p) => n + p.jsxTotal, 0) +
+    [...wholesale].reduce((n, c) => n + jsxCounts(c), 0) +
+    unchanged.reduce((n, c) => n + jsxCounts(c), 0);
+  const staticJsx =
+    plans.reduce((n, p) => n + p.staticRatio * p.jsxTotal, 0) +
+    unchanged.reduce((n, c) => n + jsxCounts(c), 0);
+  const staticRatio = jsxTotal === 0 ? 0 : staticJsx / jsxTotal;
   if (staticRatio < config.minStaticRatio) {
     return skip(
       "below-threshold",
@@ -323,6 +369,10 @@ async function planFile(run: RunContext, file: string): Promise<Outcome<Planned>
     plans,
     islandSpecifier,
     originalSpecifier,
+    movedComponents: [...wholesale].flatMap((c) => {
+      const decl = shape.value.componentDecls.get(c);
+      return decl ? [decl] : [];
+    }),
     rebaseSpecifier: (spec) =>
       spec.startsWith(".") && dir !== path.dirname(file)
         ? relativeSpecifier(dir, path.resolve(path.dirname(file), spec), true)
@@ -356,12 +406,21 @@ async function planFile(run: RunContext, file: string): Promise<Outcome<Planned>
   });
   if (!checked.ok) return checked;
 
-  const islands: IslandInfo[] = emitted.value.islands.map((i) => ({
-    name: i.name,
-    rootTag: i.rootTag,
-    props: [...i.props.map((p) => p.name), ...i.slots.map((slot) => slot.name)],
-    line: i.line,
+  const movedInfo: IslandInfo[] = [...wholesale].map((c) => ({
+    name: c.name,
+    rootTag: rootTagOf(c, sf),
+    props: [],
+    line: sf.getLineAndCharacterOfPosition(c.statement.getStart(sf)).line + 1,
   }));
+  const islands: IslandInfo[] = [
+    ...emitted.value.islands.map((i) => ({
+      name: i.name,
+      rootTag: i.rootTag,
+      props: [...i.props.map((p) => p.name), ...i.slots.map((slot) => slot.name)],
+      line: i.line,
+    })),
+    ...movedInfo,
+  ].sort((a, b) => a.line - b.line);
 
   // ---- measure ------------------------------------------------------------------------------------
   let bytesSaved: Planned["bytesSaved"];
@@ -438,6 +497,30 @@ function specialApiSkip(ctx: AnalysisContext, facts: FileFacts): Skip | undefine
       location: locOf(ctx, dynamicImport),
     };
   return undefined;
+}
+
+/** The tag of the element a component returns (used to describe components moved wholesale). */
+function rootTagOf(component: ComponentInfo, sf: ts.SourceFile): string {
+  let tag = component.name;
+  const visit = (n: ts.Node): boolean => {
+    if (ts.isJsxElement(n) || ts.isJsxSelfClosingElement(n) || ts.isJsxFragment(n)) {
+      tag = tagNameText(sf, n);
+      return true;
+    }
+    return ts.forEachChild(n, visit) ?? false;
+  };
+  if (component.fn.body) visit(component.fn.body);
+  return tag;
+}
+
+function countJsx(node: ts.Node): number {
+  let n = 0;
+  const visit = (child: ts.Node): void => {
+    if (ts.isJsxElement(child) || ts.isJsxSelfClosingElement(child) || ts.isJsxFragment(child)) n++;
+    ts.forEachChild(child, visit);
+  };
+  visit(node);
+  return n;
 }
 
 export function relativeSpecifier(fromDir: string, toFile: string, keepExtension = false): string {

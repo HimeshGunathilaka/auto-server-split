@@ -1,6 +1,7 @@
 import { ts } from "ts-morph";
 import type { ModuleGraph } from "../project/moduleGraph.js";
 import type { ComponentInfo } from "./components.js";
+import { componentDeclarationNode } from "./components.js";
 import { lineCol } from "./context.js";
 import { getModuleDirective, hasUseServerBody } from "./directives.js";
 import type { Outcome } from "./skip.js";
@@ -28,10 +29,6 @@ function isJsxTagPosition(id: ts.Identifier): boolean {
       ts.isJsxClosingElement(parent)) &&
     parent.tagName === node
   );
-}
-
-function componentDeclarationNode(component: ComponentInfo): ts.Node {
-  return ts.isFunctionDeclaration(component.fn) ? component.fn : component.fn.parent;
 }
 
 /**

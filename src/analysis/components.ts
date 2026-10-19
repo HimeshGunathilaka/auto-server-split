@@ -22,12 +22,21 @@ export type ModuleDecl = {
   names: string[];
   kind: "function" | "const" | "type" | "class" | "enum";
   exported: boolean;
+  /** Set when this declaration is a component of the file (used to copy/move whole components). */
+  component?: ComponentInfo;
 };
 
 export type FileShape = {
   components: ComponentInfo[];
   moduleDecls: ModuleDecl[];
+  /** A ModuleDecl view of every component, so components can be copied like helpers. */
+  componentDecls: Map<ComponentInfo, ModuleDecl>;
 };
+
+/** The node a component's symbol is declared on (function declaration or variable declarator). */
+export function componentDeclarationNode(component: ComponentInfo): ts.Node {
+  return ts.isFunctionDeclaration(component.fn) ? component.fn : component.fn.parent;
+}
 
 function isCapitalized(name: string): boolean {
   return /^[A-Z]/.test(name);
@@ -323,5 +332,15 @@ export function analyzeFileShape(ctx: AnalysisContext, facts: FileFacts): Outcom
   if (components.length === 0) {
     return skip("unsupported-pattern", "no function component found in this file", undefined);
   }
-  return ok({ components, moduleDecls });
+  const componentDecls = new Map<ComponentInfo, ModuleDecl>();
+  for (const component of components) {
+    componentDecls.set(component, {
+      statement: component.statement,
+      names: [component.name],
+      kind: "function",
+      exported: component.exported !== "none",
+      component,
+    });
+  }
+  return ok({ components, moduleDecls, componentDecls });
 }

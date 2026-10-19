@@ -206,3 +206,48 @@ code is evaluated on the server, so its values don't become island props.
 - Builds and browsers use `TZ=UTC` / `timezoneId: "UTC"` so date formatting is stable.
 - Next.js 16 no longer prints per-route sizes in `next build`, which is why sizes are measured
   from the served pages.
+
+## 0.4 — multiple components, Mongoose, JSX
+
+### Multiple components per file
+
+Every component in the file is planned; together they share one island file.
+- A component with no client-only code stays as it is (it becomes a Server Component).
+- A **non-exported** helper component that is entirely interactive (`fully-interactive` or
+  `state-spans-component` on its own) moves **wholesale** into the island file, exported from
+  there, and is imported back. Other components render it as a client reference, so its props
+  must be serializable (otherwise the usage becomes part of an island). Planning repeats until
+  the set of moved components is stable. An *exported* component that is entirely interactive
+  still skips the whole file: moving it would change what importers get.
+- A server-safe component of the file that an island renders (e.g. a small `Avatar`) is **copied**
+  into the island file (its original code, without `export`), and removed from the server file if
+  nothing there uses it any more.
+- A skip in any component skips the file, with the component's name in the message.
+
+### Mongoose / ObjectId picking builds an object, not flat props
+
+With `mongoose.autoSerialize`, the prop keeps its name and shape, but only the fields the island
+reads are passed, as an object literal built on the server:
+`post={{ _id: String(post._id), author: { name: post.author.name }, createdAt: post.createdAt }}`.
+That way the island's code doesn't change at all; only the prop's type changes, so the self-check
+can verify every use. Field paths stop at the first serializable value (or ObjectId). Nullable
+ObjectIds become `x == null ? x : String(x)`. The split is refused when the island uses the whole
+object (spread, passing it on, `JSON.stringify`), uses `?.` or element access on it, or calls an
+ObjectId method other than `toString()` (a string wouldn't have it). This is often useful for
+apps whose runtime values are already plain JSON but whose types still say `ObjectId`:
+`String(id)` is correct for both.
+
+### `.jsx`
+
+JS files need to be in the TypeScript program (`allowJs`, or a `jsconfig.json`). Island files get
+the same extension (`X.client.jsx`) and no type annotations. Only props whose inferred types are
+primitive (including literals and defaulted parameters such as `{ initial = 0 }`) may cross the
+boundary; anything else is `untyped-boundary`.
+
+### E2E shop app
+
+The second app (`e2e/apps/shop`) uses a `src/` layout with `@/* → ./src/*`, a `.jsx` island, a
+multi-component file with a wholesale-moved helper, Mongoose-typed props and an
+`auto-split.config.ts` file. Its JS saving is small because its components have no heavy
+dependencies. That's expected: the savings come from code that stays on the server, and here that
+is mostly markup.

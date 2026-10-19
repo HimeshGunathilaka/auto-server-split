@@ -1,6 +1,6 @@
 {
   "name": "auto-server-split",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Split partly-interactive \"use client\" components into server components plus small generated client islands.",
   "license": "MIT",
   "type": "module",
@@ -64,6 +64,7 @@
     "framer-motion": "^12.43.0",
     "globals": "^17.13.0",
     "marked": "18.1.1",
+    "mongoose": "9.11.2",
     "next": "16.4.2",
     "prettier": "3.9.10",
     "react": "19.3.1",

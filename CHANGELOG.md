@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented here. The project follows [Semantic Versioning](https://semver.org/).
 
+## 0.4.0 — multiple components, Mongoose, JSX
+
+- Multiple components per file: unchanged server components, wholesale-moved interactive helpers,
+  server components copied into islands that render them.
+- `mongoose.autoSerialize`: Mongoose documents and ObjectId-bearing values crossing the boundary
+  are reduced to the fields the island reads (`String()` for ObjectIds, Dates kept).
+- `.jsx` input (untyped-boundary rules), CSS Modules on both sides, `src/` path aliases.
+- Second e2e app (`shop`); both apps pass the before/after DOM equality checks.
+- Fixtures 28–31c.
+
 ## 0.3.0 — donut slots, e2e
 
 - Donut/slot pattern: static, non-trivial subtrees inside an island stay on the server and are

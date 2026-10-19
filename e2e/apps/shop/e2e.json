@@ -1,0 +1,23 @@
+{
+  "expectSplit": [
+    "src/components/ProductRow.tsx",
+    "src/components/Cart.tsx",
+    "src/components/Newsletter.jsx",
+    "src/components/PostDetail.tsx"
+  ],
+  "routes": [
+    {
+      "path": "/",
+      "steps": [
+        { "click": "button:has-text('Copy id') >> nth=0" },
+        { "click": "button:has-text('Copy id') >> nth=1" },
+        { "click": "button:has-text('+') >> nth=0" },
+        { "click": "button:has-text('−') >> nth=1" },
+        { "fill": ["input[aria-label=coupon]", "save10"] },
+        { "fill": ["input[aria-label=email]", "a@b.c"] },
+        { "click": "button:has-text('Subscribe')" }
+      ]
+    },
+    { "path": "/post", "steps": [{ "click": "button:has-text('7 likes')" }] }
+  ]
+}
