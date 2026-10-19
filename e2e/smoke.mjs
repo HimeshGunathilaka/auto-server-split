@@ -9,10 +9,14 @@ if (!existsSync(fixture)) {
   console.log("smoke: no fixture yet, skipping");
   process.exit(0);
 }
-const out = execFileSync(process.execPath, [path.join(root, "dist/cli.js"), "PostCard.tsx", "--json"], {
-  cwd: fixture,
-  encoding: "utf8",
-});
+const out = execFileSync(
+  process.execPath,
+  [path.join(root, "dist/cli.js"), "PostCard.tsx", "--json"],
+  {
+    cwd: fixture,
+    encoding: "utf8",
+  },
+);
 const report = JSON.parse(out);
 const file = report.files.find((f) => f.file === "PostCard.tsx");
 if (file?.status !== "split") {

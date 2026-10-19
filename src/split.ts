@@ -359,7 +359,7 @@ async function planFile(run: RunContext, file: string): Promise<Outcome<Planned>
   const islands: IslandInfo[] = emitted.value.islands.map((i) => ({
     name: i.name,
     rootTag: i.rootTag,
-    props: i.props.map((p) => p.name),
+    props: [...i.props.map((p) => p.name), ...i.slots.map((slot) => slot.name)],
     line: i.line,
   }));
 

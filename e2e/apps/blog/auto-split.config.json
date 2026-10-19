@@ -1,0 +1,5 @@
+{
+  "include": ["app/**", "components/**"],
+  "minBytesSaved": 0,
+  "minStaticRatio": 0.2
+}

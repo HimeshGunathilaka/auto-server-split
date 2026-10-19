@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented here. The project follows [Semantic Versioning](https://semver.org/).
 
+## 0.3.0 — donut slots, e2e
+
+- Donut/slot pattern: static, non-trivial subtrees inside an island stay on the server and are
+  passed in as `children` (or `slot1`, `slot2`, ...).
+- `e2e/run.mjs` + `e2e/apps/blog`: `next build` before and after `--write`, identical server HTML,
+  identical DOM after hydration and after every Playwright interaction, per-route JS sizes.
+  Blog app: 16 components split, 5 skipped as expected, `/` ships 18.5 KB gzip less JavaScript.
+- Fixture 27 (accordion donut), donut unit tests.
+
 ## 0.2.0 — grouping, loops, packages, size
 
 - Union-find grouping of anchors that share client state or handlers; LCA island roots; merging of

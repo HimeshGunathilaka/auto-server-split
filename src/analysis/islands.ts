@@ -79,6 +79,11 @@ export type IslandPlan = {
   valueImports: Set<ImportBinding>;
   /** Module-level declarations that must be copied into the island file. */
   moduleDecls: Set<ModuleDecl>;
+  /**
+   * Static subtrees inside the island that stay on the server and are passed in as JSX props
+   * ("donut" pattern): `children` for a single slot, otherwise `slot1`, `slot2`, ...
+   */
+  slots: { j: JNode; name: string }[];
   line: number;
 };
 
@@ -939,6 +944,64 @@ export function planComponent(
   const islands: IslandPlan[] = [];
   const copiedUnits = new Set<Unit>();
 
+  // ---- donut slots: static subtrees inside an island stay on the server ---------------------------
+  const anchorNodes = new Set(anchors.map((a) => a.j));
+  const subtreeOf = (j: JNode): JNode[] => jnodes.filter((other) => isAncestorOrSelf(j, other));
+  const isStaticSubtree = (j: JNode): boolean => {
+    if (subtreeOf(j).some((n) => anchorNodes.has(n))) return false;
+    if (facts.scanMarkers(j.node).length > 0) return false;
+    let clientRead = false;
+    forEachValueRef(j.node, (id) => {
+      if (clientRead) return;
+      const origin = originOf(id);
+      if (
+        (origin.kind === "local" && origin.unit.client) ||
+        (origin.kind === "module" && clientModuleDecls.has(origin.decl)) ||
+        (origin.kind === "import" &&
+          origin.usage.cls !== "neutral" &&
+          !(origin.usage.cls === "client-reference" && isTagRef(id))) ||
+        origin.kind === "browser-global" ||
+        origin.kind === "unknown" ||
+        origin.kind === "component"
+      ) {
+        clientRead = true;
+      }
+    });
+    return !clientRead;
+  };
+  const isNonTrivial = (j: JNode): boolean => {
+    if (subtreeOf(j).length > 1) return true;
+    let importedCall = false;
+    const visit = (n: ts.Node): void => {
+      if (importedCall) return;
+      if (ts.isCallExpression(n)) {
+        let callee: ts.Expression = n.expression;
+        while (ts.isPropertyAccessExpression(callee)) callee = callee.expression;
+        if (ts.isIdentifier(callee) && originOf(callee).kind === "import") importedCall = true;
+      }
+      ts.forEachChild(n, visit);
+    };
+    visit(j.node);
+    return importedCall;
+  };
+  /** Maximal static, non-trivial subtrees reachable from the island root through direct JSX children. */
+  const findSlots = (root: JNode): JNode[] => {
+    const found: JNode[] = [];
+    const visit = (j: JNode): void => {
+      for (const child of j.children) {
+        const direct = child.fnBetween.length === 0 && child.node.parent === j.node;
+        if (!direct) continue;
+        if (isStaticSubtree(child)) {
+          if (isNonTrivial(child)) found.push(child);
+          continue;
+        }
+        visit(child);
+      }
+    };
+    visit(root);
+    return found;
+  };
+
   for (const group of groups) {
     const rootNode = group.root.node;
     const rootTag = tagNameText(sf, rootNode);
@@ -957,8 +1020,13 @@ export function planComponent(
       );
     }
 
+    const slotNodes = findSlots(group.root);
+    const inSlot = (node: ts.Node): boolean =>
+      slotNodes.some((slot) => containsRange(slot.node, node));
     const inIsland = (node: ts.Node): boolean =>
-      (containsRange(rootNode, node) && !(keyAttr && containsRange(keyAttr, node))) ||
+      (containsRange(rootNode, node) &&
+        !(keyAttr && containsRange(keyAttr, node)) &&
+        !inSlot(node)) ||
       [...islandUnits].some((u) => containsRange(u.node, node));
 
     const pending: ts.Node[] = [rootNode, ...[...islandUnits].map((u) => u.node)];
@@ -998,6 +1066,7 @@ export function planComponent(
       forEachValueRef(scope, (id) => {
         if (failure) return;
         if (keyAttr && containsRange(keyAttr, id)) return;
+        if (inSlot(id)) return; // rendered on the server and passed in as JSX
         const origin = originOf(id);
         switch (origin.kind) {
           case "param":
@@ -1131,6 +1200,10 @@ export function planComponent(
       ),
       valueImports,
       moduleDecls,
+      slots: slotNodes.map((j, i) => ({
+        j,
+        name: slotNodes.length === 1 && !props.has("children") ? "children" : `slot${i + 1}`,
+      })),
       line: locOf(ctx, rootNode).line,
     });
   }
@@ -1139,12 +1212,14 @@ export function planComponent(
   const removedUnits = new Set<Unit>(clientUnits.filter((u) => u.kind !== "early-return"));
   // Copied (non-client) statements stay only if server code still reads them.
   const islandRanges = islands.map((i) => i.root.node);
+  const slotRanges = islands.flatMap((i) => i.slots.map((slot) => slot.j.node));
+  const inAnySlot = (node: ts.Node): boolean => slotRanges.some((r) => containsRange(r, node));
   const serverReads = (unit: Unit): boolean => {
     let read = false;
     const scan = (scope: ts.Node) =>
       forEachValueRef(scope, (id) => {
         if (read) return;
-        if (islandRanges.some((r) => containsRange(r, id))) return;
+        if (islandRanges.some((r) => containsRange(r, id)) && !inAnySlot(id)) return;
         const symbol = symbolOfRef(checker, id);
         if (symbol && unit.declares.has(symbol)) read = true;
       });
@@ -1172,7 +1247,9 @@ export function planComponent(
   for (const decl of clientModuleDecls) movedModuleDecls.add(decl);
 
   const staticCount = jnodes.filter(
-    (j) => !islands.some((i) => isAncestorOrSelf(i.root, j)),
+    (j) =>
+      !islands.some((i) => isAncestorOrSelf(i.root, j)) ||
+      islands.some((i) => i.slots.some((slot) => isAncestorOrSelf(slot.j, j))),
   ).length;
   return ok({
     component,

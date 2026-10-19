@@ -88,8 +88,9 @@ export class TypeRefCollector {
   }
 
   /** Type names used inside a node that moves into the island. */
-  collectFromNode(node: ts.Node): TypeRefFailure | undefined {
+  collectFromNode(node: ts.Node, exclude: readonly ts.Node[] = []): TypeRefFailure | undefined {
     for (const id of typeReferenceHeads(node)) {
+      if (exclude.some((e) => containsRange(e, id))) continue;
       const failure = this.classify(this.checker.getSymbolAtLocation(id), id.text, id);
       if (failure) return failure;
     }

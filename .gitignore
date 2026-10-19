@@ -1,8 +1,8 @@
-node_modules
-dist
-coverage
-.next
 *.tsbuildinfo
 .DS_Store
+.next
+coverage
+dist
 e2e/.tmp
+node_modules
 test/.tmp

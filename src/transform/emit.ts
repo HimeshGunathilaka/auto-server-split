@@ -175,8 +175,9 @@ export function emitSplit(input: EmitInput): Outcome<EmitOutput> {
     if (failure) return skip("unsupported-pattern", failure, locOf(ctx, decl.statement));
   }
 
+  const slotNodes: ts.Node[] = islands.flatMap((i) => i.slots.map((slot) => slot.j.node));
   for (const node of islandContent) {
-    const failure = collector.collectFromNode(node);
+    const failure = collector.collectFromNode(node, slotNodes);
     if (failure)
       return skip(
         "unsupported-pattern",
@@ -189,13 +190,42 @@ export function emitSplit(input: EmitInput): Outcome<EmitOutput> {
     if (failure) return skip("unsupported-pattern", failure.message, locOf(ctx, decl.statement));
   }
 
+  // Slots are typed as ReactNode: reuse the file's own React import when there is one.
+  const extraTypeImports = new Map<string, string[]>();
+  let reactNodeType = "ReactNode";
+  if (!ctx.isJs && islands.some((i) => i.slots.length > 0)) {
+    const fromReact = (b: ImportBinding) =>
+      b.module.kind === "external" && b.module.info.kind === "react";
+    const named = imports.bindings.find((b) => fromReact(b) && b.imported === "ReactNode");
+    const namespace = imports.bindings.find(
+      (b) => fromReact(b) && (b.imported === "*" || b.imported === "default"),
+    );
+    if (named) {
+      reactNodeType = named.local;
+      collector.deps.imports.add(named);
+    } else if (namespace) {
+      reactNodeType = `${namespace.local}.ReactNode`;
+      collector.deps.imports.add(namespace);
+    } else if (taken.has("ReactNode")) {
+      return skip(
+        "unsupported-pattern",
+        "`ReactNode` is already declared in this file, so slot props can't be typed",
+      );
+    } else {
+      extraTypeImports.set("react", ["ReactNode"]);
+    }
+  }
+
   const signatures = new Map<IslandPlan, string>();
   for (const island of islands) {
-    if (island.props.length === 0) {
+    if (island.props.length === 0 && island.slots.length === 0) {
       signatures.set(island, "");
       continue;
     }
-    const names = island.props.map((p) => p.name).join(", ");
+    const names = [
+      ...island.props.map((p) => p.name),
+      ...island.slots.map((slot) => slot.name),
+    ].join(", ");
     if (ctx.isJs) {
       signatures.set(island, `{ ${names} }`);
       continue;
@@ -216,6 +246,7 @@ export function emitSplit(input: EmitInput): Outcome<EmitOutput> {
         );
       members.push(`${prop.name}: ${result.text}`);
     }
+    for (const slot of island.slots) members.push(`${slot.name}: ${reactNodeType}`);
     signatures.set(island, `{ ${names} }: { ${members.join("; ")} }`);
   }
 
@@ -246,8 +277,28 @@ export function emitSplit(input: EmitInput): Outcome<EmitOutput> {
       rebased === spec.text &&
       entries.length === all.length &&
       entries.every((e) => e.typeOnly === e.binding.typeOnly);
+    const extra = extraTypeImports.get(spec.text);
+    if (
+      extra &&
+      !entries.every((e) => e.typeOnly) &&
+      decl.importClause?.namedBindings &&
+      !ts.isNamespaceImport(decl.importClause.namedBindings)
+    ) {
+      extraTypeImports.delete(spec.text);
+      const clause = importClauseText(entries, false).replace(
+        / \}$/,
+        `, ${extra.map((n) => `type ${n}`).join(", ")} }`,
+      );
+      islandLines.push(
+        `import ${clause} from ${specText}${decl.attributes ? ` ${decl.attributes.getText(sf)}` : ""}${semi}`,
+      );
+      continue;
+    }
     if (sameAsOriginal) islandLines.push(decl.getText(sf));
     else islandLines.push(...importStatement(decl, sf, entries, style, specText));
+  }
+  for (const [spec, names] of extraTypeImports) {
+    islandLines.push(`import type { ${names.join(", ")} } from ${q}${spec}${q}${semi}`);
   }
   if (exportedTypeImports.length > 0) {
     islandLines.push(
@@ -323,13 +374,14 @@ export function emitSplit(input: EmitInput): Outcome<EmitOutput> {
 
   // Imports: keep only what the server part still references.
   const allRemoved = [...removed, ...replacedRoots];
+  const keptInside: Range[] = slotNodes.map((n) => ({ start: n.getStart(sf), end: n.getEnd() }));
   const keyRanges: Range[] = islands.flatMap((i) =>
     i.keyAttr ? [{ start: i.keyAttr.getStart(sf), end: i.keyAttr.getEnd() }] : [],
   );
   const remainingUse = new Map<ImportBinding, { value: boolean; type: boolean }>();
   forEachIdentifier(sf, (id) => {
     const pos = id.getStart(sf);
-    if (inAny(allRemoved, pos) && !inAny(keyRanges, pos)) return;
+    if (inAny(allRemoved, pos) && !inAny(keyRanges, pos) && !inAny(keptInside, pos)) return;
     const symbol = symbolOfRef(checker, id);
     const binding = symbol ? imports.bySymbol.get(symbol) : undefined;
     if (!binding) return;
@@ -382,8 +434,25 @@ export function emitSplit(input: EmitInput): Outcome<EmitOutput> {
     const attrs: string[] = [];
     if (island.keyAttr) attrs.push(island.keyAttr.getText(sf));
     for (const prop of island.props) attrs.push(`${prop.name}={${prop.name}}`);
-    const usage = `<${island.name}${attrs.length > 0 ? ` ${attrs.join(" ")}` : ""} />`;
-    ms.overwrite(island.root.node.getStart(sf), island.root.node.getEnd(), usage);
+    const rootStart = island.root.node.getStart(sf);
+    const slotIndent = indentationOfLine(text, rootStart) + style.indent;
+    const slotSource = (node: ts.Node) => {
+      const start = node.getStart(sf);
+      const raw = text.slice(start, node.getEnd());
+      return hasMultilineLiteral(node, sf)
+        ? raw
+        : reindent(raw, indentationOfLine(text, start), slotIndent);
+    };
+    let usage: string;
+    const [onlySlot] = island.slots;
+    if (island.slots.length === 1 && onlySlot?.name === "children") {
+      const open = `<${island.name}${attrs.length > 0 ? ` ${attrs.join(" ")}` : ""}>`;
+      usage = `${open}\n${slotIndent}${slotSource(onlySlot.j.node)}\n${indentationOfLine(text, rootStart)}</${island.name}>`;
+    } else {
+      for (const slot of island.slots) attrs.push(`${slot.name}={${slotSource(slot.j.node)}}`);
+      usage = `<${island.name}${attrs.length > 0 ? ` ${attrs.join(" ")}` : ""} />`;
+    }
+    ms.overwrite(rootStart, island.root.node.getEnd(), usage);
   }
 
   const importLine = `import { ${islands.map((i) => i.name).join(", ")} } from ${q}${input.islandSpecifier}${q}${semi}`;
@@ -495,6 +564,9 @@ function renderIsland(
   const root = island.root.node;
   const rootStart = root.getStart(sf);
   const ms = new MagicString(text);
+  for (const slot of island.slots) {
+    ms.overwrite(slot.j.node.getStart(sf), slot.j.node.getEnd(), `{${slot.name}}`);
+  }
   if (island.keyAttr) {
     let start = island.keyAttr.getStart(sf);
     while (start > 0 && /[ \t]/.test(text[start - 1] ?? "")) start--;

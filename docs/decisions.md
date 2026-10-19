@@ -178,3 +178,31 @@ qualifies. The self-check applies the same rule.
 A prop named `onSubmit` on a generated island or another component isn't an event handler; it's
 judged by its value (functions are rejected unless they are Server Actions). On DOM elements every
 `on*`/`ref` prop is still rejected.
+
+## 0.3 — donut slots and e2e
+
+### Donut slot selection
+
+A slot is a JSX subtree inside an island that is (a) reached from the island root only through
+direct JSX children (so it can't sit under a condition, a `.map`, or an attribute), (b) free of
+anchors, client-only reads, hooks and render nondeterminism, and (c) non-trivial: more than one
+element, or a call to an imported function (that call is usually the reason to keep it on the
+server, e.g. `format()` from date-fns). The largest qualifying subtrees are chosen. One slot is
+passed as `children` unless the island already takes a `children` prop; several are `slot1`,
+`slot2`, ... (typed `ReactNode`, using the file's own React import when it has one). The slot's
+code is evaluated on the server, so its values don't become island props.
+
+### E2E harness details
+
+- The "before" and "after" builds run **one after the other in the same directory**
+  (`e2e/.tmp/<app>`). Turbopack derives CSS-module class names from the file path, so two copies
+  in different directories would differ for reasons that have nothing to do with the split.
+- HTML normalisation removes `<script>`, `<link>`, comments, build hashes/ids and whitespace. Both
+  the server HTML (fetched) and the live DOM after hydration and after **every** interaction step
+  must match. Every click step must also change the DOM in the split build, which proves the
+  island is interactive.
+- Per-route client JS is the gzip size of the `<script src>` files referenced by the route's HTML.
+  Counting network traffic would include `<Link>` prefetches of other routes.
+- Builds and browsers use `TZ=UTC` / `timezoneId: "UTC"` so date formatting is stable.
+- Next.js 16 no longer prints per-route sizes in `next build`, which is why sizes are measured
+  from the served pages.

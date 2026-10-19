@@ -1,0 +1,66 @@
+{
+  "expectSplit": [
+    "components/PostCard.tsx",
+    "components/Toolbar.tsx",
+    "components/FilterPanel.tsx",
+    "components/LikeCard.tsx",
+    "components/Accordion.tsx",
+    "components/TodoList.tsx",
+    "components/ProductGrid.tsx",
+    "components/ReviewList.tsx",
+    "components/FaqItem.tsx",
+    "components/Counter.tsx",
+    "components/ArticleFooter.tsx",
+    "components/Hero.tsx",
+    "components/Card.tsx",
+    "components/PriceTag.tsx",
+    "components/CommentBox.tsx",
+    "components/SiteHeader.tsx"
+  ],
+  "expectSkip": {
+    "components/Banner.tsx": "state-spans-component",
+    "components/ThemeShell.tsx": "context-provider",
+    "components/Footer.tsx": "server-env-difference",
+    "components/Badge.tsx": "imported-by-client",
+    "components/ClientPanel.tsx": "no-islands"
+  },
+  "routes": [
+    {
+      "path": "/",
+      "steps": [
+        { "click": "button:has-text('♡')" },
+        { "click": "button:has-text('Bold')" },
+        { "click": "button:has-text('Clicked 0 times')" },
+        { "fill": ["input[placeholder=Filter]", "next"] },
+        { "click": "button:has-text('3 likes')" },
+        { "click": "button:has-text('Collapse article')" },
+        { "click": "button:has-text('Expand article')" },
+        { "click": "button:has-text('Theme: light')" }
+      ]
+    },
+    {
+      "path": "/lists",
+      "steps": [
+        { "click": "input[type=checkbox] >> nth=1" },
+        { "click": "button:has-text('Add · $12')" },
+        { "select": ["select", "best"] },
+        { "click": "button:has-text('Show answer')" },
+        { "click": "button:has-text('1 click')" }
+      ]
+    },
+    {
+      "path": "/misc",
+      "steps": [
+        { "click": "button:has-text('Card clicks: 0')" },
+        { "click": "button:has-text('1 × $4.50')" },
+        { "click": "button:has-text('Like (0)')" },
+        { "fill": ["textarea", "hello"] },
+        { "click": "button:has-text('Comment')" },
+        { "click": "button:has-text('new')" },
+        { "click": "button:has-text('Back to top')" },
+        { "click": "button:has-text('About')", "waitForURL": "**/about" }
+      ]
+    },
+    { "path": "/about", "steps": [] }
+  ]
+}
