@@ -134,7 +134,8 @@ export class FileFacts {
       };
     }
     const decl = symbol.valueDeclaration ?? symbol.declarations?.[0];
-    if (!decl) return { kind: "unknown" };
+    // Intrinsic globals such as `undefined` and `globalThis` have no declarations.
+    if (!decl) return { kind: "global" };
     if (decl.getSourceFile() === this.sf) return { kind: "file", symbol, declaration: decl };
     if (isAmbientDeclaration(decl)) {
       return BROWSER_GLOBALS.has(id.text) && !(symbol.flags & ts.SymbolFlags.Alias)

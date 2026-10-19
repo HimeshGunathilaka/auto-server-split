@@ -148,3 +148,33 @@ be meaningful. It ships in 0.1 rather than 0.2. If esbuild can't bundle a file o
   unless `--allow-dirty` is passed.
 - Any `internal-error` makes the exit code `1`.
 - `--interactive` is accepted but reports "not available yet" until 1.0.
+
+## 0.2 — grouping, loops, packages, size
+
+### Loop islands never take component-level hooks
+
+The spec's loop rule makes the mapped element the island root, so the island renders once per
+item. If that island needed a hook declared at component level (for example a `useState` shared by
+every item), each item would get its own copy of the state, which is a behaviour change. In that
+case the root climbs out to the element that contains the `.map`, and the state stays shared.
+Per-item islands are used only when the island's client code has no hooks (e.g. handlers that use
+browser globals or only the loop variable).
+
+### Copied module-level code resolves at module scope
+
+When a module-level helper is copied into the island file (a local custom hook, a formatter), the
+names it uses are copied with it (constants, other helpers, imports). They never become props,
+because the helper's code lives at module level in the island file, not inside the island component.
+
+### Server Action props
+
+A component prop with a function type normally can't cross the boundary. It's allowed when *every*
+importer's JSX usage passes a Server Action for that prop: an export of a `"use server"` module, or
+a function whose body starts with `"use server"`. If any usage spreads props (`{...props}`), no prop
+qualifies. The self-check applies the same rule.
+
+### Self-check: event/ref props only on DOM elements
+
+A prop named `onSubmit` on a generated island or another component isn't an event handler; it's
+judged by its value (functions are rejected unless they are Server Actions). On DOM elements every
+`on*`/`ref` prop is still rejected.

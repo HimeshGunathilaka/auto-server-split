@@ -107,14 +107,14 @@ const main = defineCommand({
     const cwd = process.cwd();
     const root = path.resolve(cwd, args.root ?? ".");
     const positional = (args._ as string[]).filter(Boolean);
-    const paths = positional.map((p) => path.relative(root, path.resolve(cwd, p)) || ".");
-    for (const p of paths) {
-      if (!existsSync(path.resolve(root, p))) {
+    for (const p of positional) {
+      if (!existsSync(path.resolve(cwd, p))) {
         console.error(pc.red(`auto-server-split: ${p} does not exist`));
         process.exitCode = EXIT_ERROR;
         return;
       }
     }
+    const paths = positional.map((p) => path.relative(root, path.resolve(cwd, p)) || ".");
     if (args.interactive) {
       console.error(
         pc.red("auto-server-split: --interactive is not available yet (planned for 1.0)"),

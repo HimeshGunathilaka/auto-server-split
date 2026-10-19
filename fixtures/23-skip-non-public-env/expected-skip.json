@@ -1,0 +1,1 @@
+{ "file": "Footer.tsx", "code": "server-env-difference", "messageIncludes": "process.env.BUILD_ID" }

@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented here. The project follows [Semantic Versioning](https://semver.org/).
 
+## 0.2.0 — grouping, loops, packages, size
+
+- Union-find grouping of anchors that share client state or handlers; LCA island roots; merging of
+  nested islands; escape check.
+- `.map` loop islands (loop variable becomes a prop, `key` moves to the usage). Islands that need
+  component-level hooks are hoisted above the `.map` so state stays shared.
+- Custom hooks (imported or declared in the file), browser globals, client-only packages
+  (framer-motion etc.), `next/navigation` hooks.
+- Server Actions: imported actions move with the island; action props pass through when every
+  importer passes a Server Action.
+- Module-level helpers and constants used by islands are copied into the island file and removed
+  from the server file when no longer used there.
+- Unit tests: LCA, grouping/union-find, taint propagation, loop rule, import pruning.
+- Fixtures 08–26.
+
 ## 0.1.0 — first split
 
 - Module graph over the whole tsconfig program plus JS/MDX files outside it (static imports,

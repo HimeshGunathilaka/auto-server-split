@@ -156,11 +156,17 @@ export function islandBaseName(componentName: string, rootTag: string): string {
  * Plans the split of one component: which JSX subtrees become islands, which statements move with
  * them, and which values cross the boundary as props.
  */
+export type PlanOptions = {
+  /** Component props that every importer passes a Server Action for (see checkImporters). */
+  serverActionProps?: ReadonlySet<string>;
+};
+
 export function planComponent(
   ctx: AnalysisContext,
   facts: FileFacts,
   shape: FileShape,
   component: ComponentInfo,
+  options: PlanOptions = {},
 ): Outcome<ComponentPlan> {
   const { checker, sf } = ctx;
   const fn = component.fn;
@@ -176,10 +182,20 @@ export function planComponent(
 
   // ---- parameters ---------------------------------------------------------------------------
   const paramSymbols = new Set<ts.Symbol>();
+  const serverActionParams = new Set<ts.Symbol>();
   for (const param of fn.parameters) {
     for (const id of bindingIdentifiers(param.name)) {
       const symbol = checker.getSymbolAtLocation(id);
       if (symbol) paramSymbols.add(symbol);
+    }
+    if (ts.isObjectBindingPattern(param.name)) {
+      for (const element of param.name.elements) {
+        const propName = element.propertyName ?? element.name;
+        if (!ts.isIdentifier(propName) || !ts.isIdentifier(element.name)) continue;
+        if (!options.serverActionProps?.has(propName.text)) continue;
+        const symbol = checker.getSymbolAtLocation(element.name);
+        if (symbol) serverActionParams.add(symbol);
+      }
     }
   }
 
@@ -512,6 +528,7 @@ export function planComponent(
     if (!ts.isIdentifier(e)) return false;
     const origin = originOf(e);
     if (origin.kind === "import") return origin.usage.cls === "server-action";
+    if (origin.kind === "param") return serverActionParams.has(origin.symbol);
     if (origin.kind === "module" && origin.decl.kind === "function") {
       return (
         ts.isFunctionDeclaration(origin.decl.statement) && hasUseServerBody(origin.decl.statement)
@@ -655,6 +672,7 @@ export function planComponent(
 
   // Non-JSX parts of the returned expressions (e.g. `cond ? <A/> : <B/>`) run on the server.
   for (const root of renderRoots) {
+    if (isJsxElementLike(root)) continue; // an element is covered by its own anchor rules
     let problem: ts.Identifier | undefined;
     forEachValueRef(
       root,
@@ -738,22 +756,44 @@ export function planComponent(
     groupsByRoot.set(key, list);
   });
 
-  const mappedRoot = (root: JNode): Outcome<JNode> => {
-    // Walk up to the render root; the innermost .map callback decides the island root.
+  /**
+   * Applies the loop rule. An island inside a `.map` callback renders once per item, so its root is
+   * the mapped element. That is only safe when the island carries no component-level hooks:
+   * moving `useState` into a per-item island would give every item its own copy of the state.
+   * In that case the root climbs out to the element that contains the `.map`.
+   */
+  const mappedRoot = (root: JNode, perItemSafe: boolean): Outcome<JNode> => {
     let current: JNode | undefined = root;
     while (current) {
       const opaque = current.fnBetween.find((f) => !mapCallOf(f));
-      if (opaque)
+      if (opaque) {
         return skip(
           "render-prop",
           "an interactive element sits inside a callback other than .map()",
           locOf(ctx, current.node),
         );
-      if (current.fnBetween.some((f) => mapCallOf(f))) return ok(current);
+      }
+      if (current.fnBetween.some((f) => mapCallOf(f))) {
+        if (perItemSafe) return ok(current);
+        const container: JNode | undefined = current.parent;
+        if (!container) {
+          return skip(
+            "state-spans-component",
+            "state shared by every list item is used by the list itself, which is the returned element",
+            locOf(ctx, current.node),
+          );
+        }
+        root = container;
+      }
       current = current.parent;
     }
     return ok(root);
   };
+
+  const hasComponentHooks = (groupAnchors: Anchor[]): boolean =>
+    [...closureOf(groupAnchors.flatMap((a) => a.refs))].some((u) =>
+      u.markers.some((m) => m.kind === "hook"),
+    );
 
   let groups: Group[] = [];
   for (const groupAnchors of groupsByRoot.values()) {
@@ -765,7 +805,7 @@ export function planComponent(
         locOf(ctx, groupAnchors[0]?.j.node ?? fn),
       );
     }
-    const mapped = mappedRoot(lca);
+    const mapped = mappedRoot(lca, !hasComponentHooks(groupAnchors));
     if (!mapped.ok) return mapped;
     groups.push({ anchors: groupAnchors, root: mapped.value });
   }
@@ -806,7 +846,7 @@ export function planComponent(
               "client state is shared across returned trees",
               locOf(ctx, unit.node),
             );
-          const mapped = mappedRoot(lca);
+          const mapped = mappedRoot(lca, !hasComponentHooks([...other.anchors, ...group.anchors]));
           if (!mapped.ok) return mapped;
           other.anchors.push(...group.anchors);
           other.root = mapped.value;
@@ -851,7 +891,7 @@ export function planComponent(
             `client-only \`${escape.node.text}\` is read in another returned tree`,
             locOf(ctx, escape.node),
           );
-        const mapped = mappedRoot(lca);
+        const mapped = mappedRoot(lca, !hasComponentHooks(group.anchors));
         if (!mapped.ok) return mapped;
         group.root = mapped.value;
         changed = true;
@@ -923,6 +963,7 @@ export function planComponent(
 
     const pending: ts.Node[] = [rootNode, ...[...islandUnits].map((u) => u.node)];
     const visitedNodes = new Set<ts.Node>();
+    const moduleLevelScopes = new Set<ts.Node>();
     const addProp = (id: ts.Identifier, symbol: ts.Symbol): Skip | undefined => {
       const name = symbol.getName();
       const existing = props.get(name);
@@ -994,7 +1035,10 @@ export function planComponent(
           case "module": {
             const decl = origin.decl;
             if (moduleDecls.has(decl)) return;
-            if (decl.kind === "const" && !clientModuleDecls.has(decl)) {
+            // Inside copied module-level code, names resolve at module scope of the island file,
+            // so they're copied too; only references from the component body can become props.
+            const fromModuleLevel = moduleLevelScopes.has(scope);
+            if (!fromModuleLevel && decl.kind === "const" && !clientModuleDecls.has(decl)) {
               const type = checker.getTypeAtLocation(id);
               if (checkSerializable(checker, type, { primitivesOnly: ctx.isJs }).ok) {
                 failure = addProp(id, origin.symbol);
@@ -1002,6 +1046,7 @@ export function planComponent(
               }
             }
             moduleDecls.add(decl);
+            moduleLevelScopes.add(decl.statement);
             pending.push(decl.statement);
             return;
           }
@@ -1040,6 +1085,7 @@ export function planComponent(
 
     // Serializability of every prop.
     for (const prop of props.values()) {
+      if (serverActionParams.has(prop.symbol)) continue; // a Server Action reference crosses as-is
       const verdict = checkSerializable(checker, prop.type, { primitivesOnly: ctx.isJs });
       if (!verdict.ok) {
         const typeText = checker.typeToString(prop.type, rootNode, ts.TypeFormatFlags.NoTruncation);

@@ -1,0 +1,1 @@
+{ "file": "components/PostCard.tsx", "code": "imported-by-client", "messageIncludes": "components/index.ts (client, reached from components/Feed.tsx)" }

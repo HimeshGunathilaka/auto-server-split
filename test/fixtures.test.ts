@@ -105,6 +105,9 @@ describe.each(fixtures)("fixture %s", (name) => {
       }
     }
 
+    if (!UPDATE) {
+      expect(existsSync(outputDir), "a fixture needs output/ or expected-skip.json").toBe(true);
+    }
     const skipped = result.files
       .filter((f) => f.status === "skipped")
       .map((f) => `${f.file}: ${f.skipped?.code} ${f.skipped?.message}`);

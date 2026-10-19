@@ -297,7 +297,9 @@ async function planFile(run: RunContext, file: string): Promise<Outcome<Planned>
 
   const plans: ComponentPlan[] = [];
   for (const component of shape.value.components) {
-    const plan = planComponent(ctx, facts, shape.value, component);
+    const plan = planComponent(ctx, facts, shape.value, component, {
+      serverActionProps: importerCheck.value.serverActionProps,
+    });
     if (!plan.ok) return plan;
     plans.push(plan.value);
   }
@@ -349,6 +351,7 @@ async function planFile(run: RunContext, file: string): Promise<Outcome<Planned>
     serverText,
     islandText,
     importers: importerCheck.value.importers,
+    serverActionProps: importerCheck.value.serverActionProps,
     isJs,
   });
   if (!checked.ok) return checked;

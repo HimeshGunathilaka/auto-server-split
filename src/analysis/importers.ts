@@ -2,6 +2,7 @@ import { ts } from "ts-morph";
 import type { ModuleGraph } from "../project/moduleGraph.js";
 import type { ComponentInfo } from "./components.js";
 import { lineCol } from "./context.js";
+import { getModuleDirective, hasUseServerBody } from "./directives.js";
 import type { Outcome } from "./skip.js";
 import { ok, skip } from "./skip.js";
 
@@ -43,8 +44,11 @@ export function checkImporters(
   graph: ModuleGraph,
   file: string,
   components: ComponentInfo[],
-): Outcome<{ importers: string[] }> {
+): Outcome<{ importers: string[]; serverActionProps: Set<string> }> {
   const checker = program.getTypeChecker();
+  // prop name -> true while every JSX usage seen so far passes a Server Action for it.
+  const actionUsage = new Map<string, boolean>();
+  let sawSpread = false;
   const componentDecls = new Set(components.map(componentDeclarationNode));
   const importers = new Set<string>();
   const queue = [file];
@@ -82,6 +86,23 @@ export function checkImporters(
       const sf = program.getSourceFile(importer);
       if (!sf) continue;
       let misuse: ts.Identifier | undefined;
+      const recordActionProps = (tag: ts.Identifier) => {
+        let tagNode: ts.Node = tag;
+        if (ts.isPropertyAccessExpression(tagNode.parent)) tagNode = tagNode.parent;
+        const element = tagNode.parent;
+        if (!ts.isJsxOpeningElement(element) && !ts.isJsxSelfClosingElement(element)) return;
+        for (const attr of element.attributes.properties) {
+          if (ts.isJsxSpreadAttribute(attr)) {
+            sawSpread = true;
+            continue;
+          }
+          const name = attr.name.getText(sf);
+          const init = attr.initializer;
+          const expr = init && ts.isJsxExpression(init) ? init.expression : undefined;
+          const isAction = expr !== undefined && isServerActionReference(expr, checker);
+          actionUsage.set(name, (actionUsage.get(name) ?? true) && isAction);
+        }
+      };
       const visit = (n: ts.Node): void => {
         if (misuse) return;
         if (ts.isIdentifier(n)) {
@@ -100,6 +121,7 @@ export function checkImporters(
               isJsxTagPosition(n) ||
               isInTypePosition(n);
             if (!benign) misuse = n;
+            if (isJsxTagPosition(n)) recordActionProps(n);
           }
           return;
         }
@@ -115,5 +137,30 @@ export function checkImporters(
       }
     }
   }
-  return ok({ importers: [...importers] });
+  const serverActionProps = new Set<string>();
+  if (!sawSpread) for (const [name, all] of actionUsage) if (all) serverActionProps.add(name);
+  return ok({ importers: [...importers], serverActionProps });
+}
+
+/** True if `expr` names a Server Action: an export of a "use server" module or a "use server" function. */
+export function isServerActionReference(expr: ts.Expression, checker: ts.TypeChecker): boolean {
+  let e = expr;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  if (!ts.isIdentifier(e) && !ts.isPropertyAccessExpression(e)) return false;
+  const symbol = checker.getSymbolAtLocation(e);
+  const resolved =
+    symbol && symbol.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol;
+  const decl = resolved?.valueDeclaration ?? resolved?.declarations?.[0];
+  if (!decl) return false;
+  const sf = decl.getSourceFile();
+  if (sf.isDeclarationFile) return false;
+  if (getModuleDirective(sf).directive === "use server") return true;
+  if (ts.isFunctionDeclaration(decl) || ts.isFunctionExpression(decl) || ts.isArrowFunction(decl)) {
+    return hasUseServerBody(decl);
+  }
+  if (ts.isVariableDeclaration(decl) && decl.initializer) {
+    const init = decl.initializer;
+    if (ts.isArrowFunction(init) || ts.isFunctionExpression(init)) return hasUseServerBody(init);
+  }
+  return false;
 }

@@ -27,6 +27,8 @@ export type SelfCheckInput = {
   islandText: string;
   /** Files whose diagnostics must not change (importers of `file`). */
   importers: string[];
+  /** Component props that importers fill with Server Actions; they may cross the boundary. */
+  serverActionProps?: ReadonlySet<string>;
   isJs: boolean;
 };
 
@@ -165,14 +167,15 @@ export function selfCheck(input: SelfCheckInput): Outcome<void> {
             continue;
           }
           const name = attr.name.getText(serverSf);
-          if (/^on[A-Z]/.test(name) || name === "ref") {
+          // Event/ref props only matter on DOM elements; component props are checked by value below.
+          if (intrinsic && (/^on[A-Z]/.test(name) || name === "ref")) {
             problem = `<${n.tagName.getText(serverSf)}> still has ${name}`;
             return;
           }
           const init = attr.initializer;
           if (!init || !ts.isJsxExpression(init) || !init.expression) continue;
           const type = checker.getTypeAtLocation(init.expression);
-          const action = isServerActionExpr(init.expression, facts);
+          const action = isServerActionExpr(init.expression, facts, input.serverActionProps);
           if (isCallableType(type) && !action) {
             problem = `<${n.tagName.getText(serverSf)}> receives a function in ${name}`;
             return;
@@ -273,9 +276,21 @@ function isClientReferenceTag(
   return info.kind !== "file";
 }
 
-function isServerActionExpr(expr: ts.Expression, facts: FileFacts): boolean {
+function isServerActionExpr(
+  expr: ts.Expression,
+  facts: FileFacts,
+  serverActionProps: ReadonlySet<string> | undefined,
+): boolean {
   const e = stripParens(expr);
   if (!ts.isIdentifier(e)) return false;
   const info = facts.classifyRef(e);
-  return info.kind === "import" && info.usage.cls === "server-action";
+  if (info.kind === "import") return info.usage.cls === "server-action";
+  if (info.kind === "file" && serverActionProps && ts.isBindingElement(info.declaration)) {
+    const element = info.declaration;
+    const propName = element.propertyName ?? element.name;
+    const inParameter =
+      ts.isObjectBindingPattern(element.parent) && ts.isParameter(element.parent.parent);
+    return inParameter && ts.isIdentifier(propName) && serverActionProps.has(propName.text);
+  }
+  return false;
 }
