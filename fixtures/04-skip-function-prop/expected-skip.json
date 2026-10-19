@@ -1,0 +1,1 @@
+{ "file": "ItemRow.tsx", "code": "non-serializable-prop", "messageIncludes": "onSelect" }

@@ -72,7 +72,11 @@ export function ok<T>(value: T): Outcome<T> {
   return { ok: true, value };
 }
 
-export function skip(code: SkipCode, message: string, location?: SourceLocation): { ok: false; skip: Skip } {
+export function skip(
+  code: SkipCode,
+  message: string,
+  location?: SourceLocation,
+): { ok: false; skip: Skip } {
   return { ok: false, skip: location ? { code, message, location } : { code, message } };
 }
 

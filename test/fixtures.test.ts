@@ -1,4 +1,12 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { split } from "../src/index.js";
@@ -55,7 +63,7 @@ describe.each(fixtures)("fixture %s", (name) => {
   it(expectedSkip ? `skips with ${expectedSkip.code}` : "matches output/", async () => {
     const result = await split({
       root: inputDir,
-      ...(meta.only ? { paths: meta.only } : {}),
+      paths: meta.only ?? ["."],
       write: false,
       measure: meta.measure ?? false,
       config: { minBytesSaved: 0, ...meta.config },
@@ -70,11 +78,16 @@ describe.each(fixtures)("fixture %s", (name) => {
     if (expectedSkip) {
       const file = result.files.find((f) => f.file === expectedSkip.file);
       expect(file, `no result for ${expectedSkip.file}`).toBeDefined();
-      expect({ status: file?.status, code: file?.skipped?.code, message: file?.skipped?.message }).toMatchObject({
+      expect({
+        status: file?.status,
+        code: file?.skipped?.code,
+        message: file?.skipped?.message,
+      }).toMatchObject({
         status: "skipped",
         code: expectedSkip.code,
       });
-      if (expectedSkip.messageIncludes) expect(file?.skipped?.message).toContain(expectedSkip.messageIncludes);
+      if (expectedSkip.messageIncludes)
+        expect(file?.skipped?.message).toContain(expectedSkip.messageIncludes);
       const touched = result.files.flatMap((f) => Object.keys(f.outputs));
       expect(touched, "a skip fixture must not produce outputs").toEqual([]);
       return;
@@ -92,7 +105,9 @@ describe.each(fixtures)("fixture %s", (name) => {
       }
     }
 
-    const skipped = result.files.filter((f) => f.status === "skipped").map((f) => `${f.file}: ${f.skipped?.code} ${f.skipped?.message}`);
+    const skipped = result.files
+      .filter((f) => f.status === "skipped")
+      .map((f) => `${f.file}: ${f.skipped?.code} ${f.skipped?.message}`);
     const expectedFiles = listFiles(outputDir);
     expect(Object.keys(actual).sort(), `skips: ${skipped.join("\n")}`).toEqual(expectedFiles);
     for (const rel of expectedFiles) {

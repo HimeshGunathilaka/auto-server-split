@@ -1,9 +1,11 @@
 import js from "@eslint/js";
+import globals from "globals";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
   { ignores: ["dist/**", "fixtures/**", "e2e/apps/**", "e2e/.tmp/**", "coverage/**"] },
   js.configs.recommended,
+  { files: ["**/*.mjs", "**/*.js"], languageOptions: { globals: globals.node } },
   ...tseslint.configs.recommended,
   {
     files: ["src/**/*.ts"],
