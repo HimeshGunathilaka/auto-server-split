@@ -29,4 +29,9 @@ export type FrameworkAdapter = {
   isClientVisibleEnv(name: string): boolean;
   /** File basenames (without extension) that must remain Client Components (e.g. Next's error.tsx). */
   mustStayClientFiles: readonly string[];
+  /**
+   * Framework hooks that only read shared context (the same value for every caller), so a per-item
+   * list island may call them (e.g. Next's usePathname).
+   */
+  sharedContextHooks: readonly string[];
 };

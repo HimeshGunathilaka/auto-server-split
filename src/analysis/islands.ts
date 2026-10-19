@@ -103,17 +103,8 @@ export type ComponentPlan = {
   jsxTotal: number;
 };
 
-/** Hooks whose result is the same for every caller under the same provider/route. */
-const SHARED_CONTEXT_HOOKS = new Set([
-  "usePathname",
-  "useSearchParams",
-  "useParams",
-  "useRouter",
-  "useSelectedLayoutSegment",
-  "useSelectedLayoutSegments",
-  "useContext",
-  "use",
-]);
+/** React hooks whose result is the same for every caller under the same provider. */
+const REACT_SHARED_CONTEXT_HOOKS = ["useContext", "use"];
 
 class UnionFind {
   private parent = new Map<number, number>();
@@ -831,10 +822,14 @@ export function planComponent(
 
   // Hooks that only read shared context return the same value in every list item, so a per-item
   // island may call them; any other hook (state, refs, effects, custom hooks) must not be duplicated.
+  const sharedContextHooks = new Set([
+    ...REACT_SHARED_CONTEXT_HOOKS,
+    ...ctx.framework.sharedContextHooks,
+  ]);
   const hasComponentHooks = (groupAnchors: Anchor[]): boolean =>
     [...closureOf(groupAnchors.flatMap((a) => a.refs))].some((u) =>
       u.markers.some(
-        (m) => m.kind === "hook" && !SHARED_CONTEXT_HOOKS.has(m.detail.replace(/\(\)$/, "")),
+        (m) => m.kind === "hook" && !sharedContextHooks.has(m.detail.replace(/\(\)$/, "")),
       ),
     );
 
@@ -867,7 +862,7 @@ export function planComponent(
   };
   const unitHasOwnHooks = (u: Unit) =>
     u.markers.some(
-      (m) => m.kind === "hook" && !SHARED_CONTEXT_HOOKS.has(m.detail.replace(/\(\)$/, "")),
+      (m) => m.kind === "hook" && !sharedContextHooks.has(m.detail.replace(/\(\)$/, "")),
     );
   const groupHasHooks = (g: Group): boolean =>
     hasComponentHooks(g.anchors) || [...unitClosure(g.extra)].some(unitHasOwnHooks);

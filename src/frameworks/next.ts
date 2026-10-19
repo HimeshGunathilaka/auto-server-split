@@ -60,6 +60,15 @@ export const nextAdapter: FrameworkAdapter = {
   },
 
   mustStayClientFiles: ["error", "global-error"],
+
+  sharedContextHooks: [
+    "usePathname",
+    "useSearchParams",
+    "useParams",
+    "useRouter",
+    "useSelectedLayoutSegment",
+    "useSelectedLayoutSegments",
+  ],
 };
 
 export const NEXT_ROUTE_FILE_BASENAMES = ["page", "route"];
