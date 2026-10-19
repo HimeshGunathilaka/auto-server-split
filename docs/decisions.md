@@ -251,3 +251,29 @@ multi-component file with a wholesale-moved helper, Mongoose-typed props and an
 `auto-split.config.ts` file. Its JS saving is small because its components have no heavy
 dependencies. That's expected: the savings come from code that stays on the server, and here that
 is mostly markup.
+
+## 0.5 — ESLint plugin
+
+### No autofix (as specified)
+
+An ESLint fix can only edit the file being linted, and a split has to create a new file
+(`X.client.tsx`). Faking it (writing files from inside a rule, or a suggestion that leaves the
+code broken until another file appears) would violate both ESLint's model and this tool's
+"never produce broken code" rule. So the rule only reports, and its message names the CLI command
+that applies the split.
+
+### Two modes, both conservative
+
+- **Typed linting** (`parserServices.program` present): the rule loads its own ts-morph project
+  from the program's tsconfig (`configFilePath`), so it sees exactly what the CLI sees.
+- **No typed linting:** the nearest `tsconfig.json`/`jsconfig.json` is found, the module graph is
+  built syntactically from its file list, and a lazy project loads only the linted file, what it
+  imports, its importers (through barrels) and ambient `.d.ts` files. If an importer can't be
+  loaded, or the file isn't covered by the tsconfig, nothing is reported.
+- Both modes are cached per tsconfig for the lifetime of the lint process. The linted file's
+  in-editor text replaces the on-disk text before analysis. The module graph isn't rebuilt
+  within a process, so a newly added importer is seen on the next lint run.
+- The rule runs the self-check before reporting (`selfCheck: false` turns it off for speed), so it
+  only suggests splits the CLI would actually perform.
+- ESLint rules are synchronous, so the rule reads `auto-split.config.json` but not `.ts`/`.mjs`
+  config files. Rule options (`minStaticRatio`) override it.

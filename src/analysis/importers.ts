@@ -81,7 +81,12 @@ export function checkImporters(
         queue.push(importer);
       }
       const sf = program.getSourceFile(importer);
-      if (!sf) continue;
+      if (!sf) {
+        return skip(
+          "imported-by-client",
+          `imported by ${rel}, which couldn't be loaded to verify how it uses the component`,
+        );
+      }
       let misuse: ts.Identifier | undefined;
       const recordActionProps = (tag: ts.Identifier) => {
         let tagNode: ts.Node = tag;

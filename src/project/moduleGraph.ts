@@ -189,7 +189,26 @@ export function buildModuleGraph(
     });
   };
 
-  for (const sf of projectSourceFiles(loaded)) addFile(path.resolve(sf.fileName), sf, true);
+  if (loaded.lazyFileNames) {
+    // Lazy projects: parse every tsconfig file syntactically (no type checking needed for imports).
+    for (const file of loaded.lazyFileNames) {
+      if (file.endsWith(".d.ts") || file.includes(`${path.sep}node_modules${path.sep}`)) continue;
+      let text: string;
+      try {
+        text = readFileSync(file, "utf8");
+      } catch {
+        continue;
+      }
+      const kind = /\.(tsx|jsx)$/.test(file)
+        ? ts.ScriptKind.TSX
+        : /\.(js|mjs|cjs)$/.test(file)
+          ? ts.ScriptKind.JS
+          : ts.ScriptKind.TS;
+      addFile(file, ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, kind), true);
+    }
+  } else {
+    for (const sf of projectSourceFiles(loaded)) addFile(path.resolve(sf.fileName), sf, true);
+  }
 
   // Files the program doesn't cover can still import a component; they count as importers.
   const extra = fg.sync(["**/*.{ts,tsx,js,jsx,mjs,cjs,mts,cts,mdx}"], {

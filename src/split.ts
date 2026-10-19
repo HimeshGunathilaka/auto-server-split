@@ -32,7 +32,7 @@ import { selfCheck } from "./verify/selfCheck.js";
 
 const STYLESHEET_RE = /\.(css|scss|sass|less|styl|pcss)$/;
 
-type RunContext = {
+export type RunContext = {
   root: string;
   config: ResolvedConfig;
   framework: FrameworkAdapter;
@@ -53,6 +53,40 @@ type Planned = {
   originalText: string;
 };
 
+/** Builds the shared state for one run: project, module graph, classifiers. Synchronous. */
+export function createRunContext(
+  root: string,
+  config: ResolvedConfig,
+  options: { lazy?: boolean; tsconfig?: string } = {},
+): RunContext {
+  const framework = nextAdapter;
+  const loaded = loadProject(root, {
+    lazy: options.lazy ?? false,
+    ...(options.tsconfig ? { tsconfig: options.tsconfig } : {}),
+  });
+  const classifier = new PackageClassifier(framework, config.clientOnlyPackages);
+  const graph = buildModuleGraph(loaded, classifier);
+  const serverSafeHooks = new Set(config.serverSafeHooks);
+  const moduleSafety = new ModuleSafety(
+    () => loaded.project.getProgram().compilerObject,
+    graph,
+    framework,
+    serverSafeHooks,
+  );
+  return {
+    root,
+    config,
+    framework,
+    loaded,
+    graph,
+    classifier,
+    moduleSafety,
+    serverSafeHooks,
+    pageExtensions: readPageExtensions(root),
+    measurer: undefined,
+  };
+}
+
 export async function runSplit(
   options: SplitOptions = {},
 ): Promise<SplitResult & { filesScanned: number }> {
@@ -64,35 +98,13 @@ export async function runSplit(
       : findConfigFile(root);
   const fileConfig = configFile ? await loadConfigFile(configFile) : undefined;
   const config = resolveConfig(fileConfig, options.config);
-  const framework = nextAdapter;
 
-  const loaded = loadProject(root);
-  const classifier = new PackageClassifier(framework, config.clientOnlyPackages);
-  const graph = buildModuleGraph(loaded, classifier);
-  const serverSafeHooks = new Set(config.serverSafeHooks);
-  const moduleSafety = new ModuleSafety(
-    () => loaded.project.getProgram().compilerObject,
-    graph,
-    framework,
-    serverSafeHooks,
-  );
-  let measurer: BundleMeasurer | undefined;
+  const run = createRunContext(root, config);
   if (options.measure !== false) {
     const { BundleMeasurer } = await import("./measure/bundleSize.js");
-    measurer = new BundleMeasurer(root, graph, loaded.configFile);
+    run.measurer = new BundleMeasurer(root, run.graph, run.loaded.configFile);
   }
-  const run: RunContext = {
-    root,
-    config,
-    framework,
-    loaded,
-    graph,
-    classifier,
-    moduleSafety,
-    serverSafeHooks,
-    pageExtensions: readPageExtensions(root),
-    measurer,
-  };
+  const { graph, measurer } = run;
 
   const targets = selectTargets(root, options.paths, config);
   const files: FileResult[] = [];
@@ -198,7 +210,25 @@ async function processFile(run: RunContext, file: string): Promise<FileResult> {
   }
 }
 
-async function planFile(run: RunContext, file: string): Promise<Outcome<Planned>> {
+/** Everything the synchronous part of the pipeline produces (used by the CLI/API and the ESLint rule). */
+export type Analyzed = {
+  file: string;
+  islandFile: string;
+  islandSpecifier: string;
+  serverText: string;
+  islandText: string;
+  islands: IslandInfo[];
+  staticRatio: number;
+  importers: string[];
+  serverActionProps: Set<string>;
+  isJs: boolean;
+  originalText: string;
+  /** Name of the main component (the default export, else the first exported one). */
+  componentName: string;
+};
+
+/** Analysis + rewrite, without formatting, self-check or measurement. Synchronous. */
+export function analyzeFile(run: RunContext, file: string): Outcome<Analyzed> {
   const { loaded, graph, config, framework, root } = run;
   const node = graph.nodes.get(file);
   if (!node?.inProgram) {
@@ -380,32 +410,6 @@ async function planFile(run: RunContext, file: string): Promise<Outcome<Planned>
   });
   if (!emitted.ok) return emitted;
 
-  let serverText = emitted.value.serverText;
-  let islandText = emitted.value.islandText;
-  if (config.prettier === "auto") {
-    serverText = await formatWithProjectPrettier(root, file, serverText);
-    islandText = await formatWithProjectPrettier(root, islandFile, islandText);
-  }
-
-  // ---- self-check -------------------------------------------------------------------------------
-  const checked = selfCheck({
-    loaded,
-    graph,
-    framework,
-    classifier: run.classifier,
-    moduleSafety: run.moduleSafety,
-    serverSafeHooks: run.serverSafeHooks,
-    file,
-    islandFile,
-    islandSpecifier,
-    serverText,
-    islandText,
-    importers: importerCheck.value.importers,
-    serverActionProps: importerCheck.value.serverActionProps,
-    isJs,
-  });
-  if (!checked.ok) return checked;
-
   const movedInfo: IslandInfo[] = [...wholesale].map((c) => ({
     name: c.name,
     rootTag: rootTagOf(c, sf),
@@ -421,11 +425,70 @@ async function planFile(run: RunContext, file: string): Promise<Outcome<Planned>
     })),
     ...movedInfo,
   ].sort((a, b) => a.line - b.line);
+  const main =
+    components.find((c) => c.exported === "default") ??
+    components.find((c) => c.exported !== "none") ??
+    components[0];
 
-  // ---- measure ------------------------------------------------------------------------------------
+  return ok({
+    file,
+    islandFile,
+    islandSpecifier,
+    serverText: emitted.value.serverText,
+    islandText: emitted.value.islandText,
+    islands,
+    staticRatio,
+    importers: importerCheck.value.importers,
+    serverActionProps: importerCheck.value.serverActionProps,
+    isJs,
+    originalText: sf.text,
+    componentName: main?.name ?? path.basename(file, ext),
+  });
+}
+
+/** Runs the self-check (spec 5.7) on an analysed file's output. Synchronous. */
+export function checkAnalyzed(
+  run: RunContext,
+  analyzed: Analyzed,
+  serverText = analyzed.serverText,
+  islandText = analyzed.islandText,
+): Outcome<void> {
+  return selfCheck({
+    loaded: run.loaded,
+    graph: run.graph,
+    framework: run.framework,
+    classifier: run.classifier,
+    moduleSafety: run.moduleSafety,
+    serverSafeHooks: run.serverSafeHooks,
+    file: analyzed.file,
+    islandFile: analyzed.islandFile,
+    islandSpecifier: analyzed.islandSpecifier,
+    serverText,
+    islandText,
+    importers: analyzed.importers,
+    serverActionProps: analyzed.serverActionProps,
+    isJs: analyzed.isJs,
+  });
+}
+
+async function planFile(run: RunContext, file: string): Promise<Outcome<Planned>> {
+  const { config, root } = run;
+  const analyzed = analyzeFile(run, file);
+  if (!analyzed.ok) return analyzed;
+  const a = analyzed.value;
+  let serverText = a.serverText;
+  let islandText = a.islandText;
+  if (config.prettier === "auto") {
+    serverText = await formatWithProjectPrettier(root, file, serverText);
+    islandText = await formatWithProjectPrettier(root, a.islandFile, islandText);
+  }
+
+  const checked = checkAnalyzed(run, a, serverText, islandText);
+  if (!checked.ok) return checked;
+
   let bytesSaved: Planned["bytesSaved"];
   if (run.measurer) {
-    bytesSaved = await run.measurer.measure(file, sf.text, islandFile, islandText);
+    bytesSaved = await run.measurer.measure(file, a.originalText, a.islandFile, islandText);
     if (bytesSaved && bytesSaved.conservative < config.minBytesSaved) {
       return skip(
         "below-threshold",
@@ -435,11 +498,11 @@ async function planFile(run: RunContext, file: string): Promise<Outcome<Planned>
   }
 
   return ok({
-    outputs: { [rel(root, file)]: serverText, [rel(root, islandFile)]: islandText },
-    islands,
-    staticRatio,
+    outputs: { [rel(root, file)]: serverText, [rel(root, a.islandFile)]: islandText },
+    islands: a.islands,
+    staticRatio: a.staticRatio,
     ...(bytesSaved ? { bytesSaved } : {}),
-    originalText: sf.text,
+    originalText: a.originalText,
   });
 }
 

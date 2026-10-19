@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented here. The project follows [Semantic Versioning](https://semver.org/).
 
+## 0.5.0 — ESLint plugin
+
+- `auto-server-split/eslint`: flat-config plugin with `prefer-server-split` (report only, on the
+  `"use client"` directive) and `configs.recommended` (`warn`, `minStaticRatio: 0.5`).
+- Typed linting uses the full project for the program's tsconfig; without it, a lazy project loads
+  only the linted file, its imports and its importers (module graph built syntactically). Both are
+  cached per tsconfig for the lint process. The rule runs the self-check before reporting.
+- Engine refactor: synchronous `analyzeFile` / `checkAnalyzed`, `createRunContext`.
+- RuleTester tests with and without typed linting.
+
 ## 0.4.0 — multiple components, Mongoose, JSX
 
 - Multiple components per file: unchanged server components, wholesale-moved interactive helpers,
