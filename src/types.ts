@@ -7,6 +7,8 @@ export type IslandInfo = {
   rootTag: string;
   props: string[];
   line: number;
+  /** True for a whole helper component moved into the island file (not a generated island). */
+  moved?: boolean;
 };
 
 export type FileResult = {

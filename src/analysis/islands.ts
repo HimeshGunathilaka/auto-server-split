@@ -103,6 +103,18 @@ export type ComponentPlan = {
   jsxTotal: number;
 };
 
+/** Hooks whose result is the same for every caller under the same provider/route. */
+const SHARED_CONTEXT_HOOKS = new Set([
+  "usePathname",
+  "useSearchParams",
+  "useParams",
+  "useRouter",
+  "useSelectedLayoutSegment",
+  "useSelectedLayoutSegments",
+  "useContext",
+  "use",
+]);
+
 class UnionFind {
   private parent = new Map<number, number>();
   find(x: number): number {
@@ -773,7 +785,8 @@ export function planComponent(
     }
   });
 
-  type Group = { anchors: Anchor[]; root: JNode };
+  /** `extra`: client statements no element reads directly (effects...) attached to this island. */
+  type Group = { anchors: Anchor[]; root: JNode; extra: Set<Unit> };
   const groupsByRoot = new Map<number, Anchor[]>();
   anchors.forEach((anchor, i) => {
     const key = uf.find(i);
@@ -816,9 +829,13 @@ export function planComponent(
     return ok(root);
   };
 
+  // Hooks that only read shared context return the same value in every list item, so a per-item
+  // island may call them; any other hook (state, refs, effects, custom hooks) must not be duplicated.
   const hasComponentHooks = (groupAnchors: Anchor[]): boolean =>
     [...closureOf(groupAnchors.flatMap((a) => a.refs))].some((u) =>
-      u.markers.some((m) => m.kind === "hook"),
+      u.markers.some(
+        (m) => m.kind === "hook" && !SHARED_CONTEXT_HOOKS.has(m.detail.replace(/\(\)$/, "")),
+      ),
     );
 
   let groups: Group[] = [];
@@ -833,24 +850,87 @@ export function planComponent(
     }
     const mapped = mappedRoot(lca, !hasComponentHooks(groupAnchors));
     if (!mapped.ok) return mapped;
-    groups.push({ anchors: groupAnchors, root: mapped.value });
+    groups.push({ anchors: groupAnchors, root: mapped.value, extra: new Set() });
   }
 
   // Merge nested / overlapping islands and apply the escape check until stable.
+  const unitClosure = (start: Iterable<Unit>): Set<Unit> => {
+    const out = new Set<Unit>();
+    const stack = [...start];
+    while (stack.length > 0) {
+      const unit = stack.pop() as Unit;
+      if (out.has(unit)) continue;
+      out.add(unit);
+      stack.push(...unit.localDeps);
+    }
+    return out;
+  };
+  const unitHasOwnHooks = (u: Unit) =>
+    u.markers.some(
+      (m) => m.kind === "hook" && !SHARED_CONTEXT_HOOKS.has(m.detail.replace(/\(\)$/, "")),
+    );
+  const groupHasHooks = (g: Group): boolean =>
+    hasComponentHooks(g.anchors) || [...unitClosure(g.extra)].some(unitHasOwnHooks);
   const unitsOfGroup = (group: Group): Set<Unit> => {
     const refs: ts.Identifier[] = [];
     forEachValueRef(group.root.node, (id) => refs.push(id));
-    return closureOf(refs);
+    const units = closureOf(refs);
+    for (const unit of unitClosure(group.extra)) units.add(unit);
+    return units;
+  };
+  /**
+   * Client statements that no element reads directly (typically `useEffect` syncing some state)
+   * belong to the island that owns the state they use. Returns true if something changed.
+   */
+  const attachUnreadClientUnits = (): Outcome<boolean> => {
+    let changed = false;
+    for (const unit of units) {
+      if (!unit.client || unit.kind === "early-return") continue;
+      const owned = groups.map((g) => unitsOfGroup(g));
+      if (owned.some((set) => set.has(unit))) continue;
+      const deps = unitClosure(unit.localDeps);
+      const owners = groups.filter((_, i) => [...deps].some((d) => d.client && owned[i]?.has(d)));
+      const [first, ...rest] = owners;
+      if (!first) continue; // uses no island's state: reported as unconnected later
+      if (rest.length > 0) {
+        const lca = lowestCommonAncestor(owners.map((g) => g.root));
+        if (!lca)
+          return skip(
+            "state-spans-component",
+            "client state is shared across returned trees",
+            locOf(ctx, unit.node),
+          );
+        const merged = [...owners.flatMap((g) => g.anchors)];
+        const mapped = mappedRoot(lca, !owners.some(groupHasHooks));
+        if (!mapped.ok) return mapped;
+        first.anchors = merged;
+        first.root = mapped.value;
+        for (const other of rest) other.extra.forEach((u) => first.extra.add(u));
+        groups = groups.filter((g) => !rest.includes(g));
+      }
+      first.extra.add(unit);
+      if (unitHasOwnHooks(unit)) {
+        // An effect must run once, not once per list item: keep the island out of any .map.
+        const hoisted = mappedRoot(first.root, false);
+        if (!hoisted.ok) return hoisted;
+        first.root = hoisted.value;
+      }
+      changed = true;
+    }
+    return ok(changed);
   };
 
   for (let iteration = 0; iteration < 100; iteration++) {
-    let changed = false;
+    const attached = attachUnreadClientUnits();
+    if (!attached.ok) return attached;
+    let changed = attached.value;
     // Nesting.
     outer: for (const a of groups) {
       for (const b of groups) {
         if (a === b) continue;
         if (isAncestorOrSelf(a.root, b.root)) {
           a.anchors.push(...b.anchors);
+          b.extra.forEach((u) => a.extra.add(u));
           groups = groups.filter((g) => g !== b);
           changed = true;
           break outer;
@@ -872,9 +952,10 @@ export function planComponent(
               "client state is shared across returned trees",
               locOf(ctx, unit.node),
             );
-          const mapped = mappedRoot(lca, !hasComponentHooks([...other.anchors, ...group.anchors]));
+          const mapped = mappedRoot(lca, !(groupHasHooks(other) || groupHasHooks(group)));
           if (!mapped.ok) return mapped;
           other.anchors.push(...group.anchors);
+          group.extra.forEach((u) => other.extra.add(u));
           other.root = mapped.value;
           groups = groups.filter((g) => g !== group);
           changed = true;
@@ -917,7 +998,7 @@ export function planComponent(
             `client-only \`${escape.node.text}\` is read in another returned tree`,
             locOf(ctx, escape.node),
           );
-        const mapped = mappedRoot(lca, !hasComponentHooks(group.anchors));
+        const mapped = mappedRoot(lca, !groupHasHooks(group));
         if (!mapped.ok) return mapped;
         group.root = mapped.value;
         changed = true;

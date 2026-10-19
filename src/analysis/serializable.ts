@@ -87,8 +87,14 @@ export function checkSerializable(
     const flags = t.flags;
     const text = () => checker.typeToString(t);
 
-    if (flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown))
-      return fail(`is \`${text()}\`, which can't be proven serializable`);
+    if (flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) {
+      const unresolved = "intrinsicName" in t && t.intrinsicName === "error";
+      return fail(
+        unresolved
+          ? `has the type \`${text()}\`, which couldn't be resolved (missing import or generated types?)`
+          : `is \`${text()}\`, which can't be proven serializable`,
+      );
+    }
     if (flags & ts.TypeFlags.Never) return fail("is `never`");
     if (
       flags &

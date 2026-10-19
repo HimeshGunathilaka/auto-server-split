@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { defineCommand, runMain } from "citty";
 import pc from "picocolors";
@@ -47,18 +47,29 @@ function describeSkip(file: FileResult, verbose: boolean): string {
   return `${color("– skipped")} ${file.file}${loc} ${pc.dim(`[${s.code}]`)} ${message}`;
 }
 
-/** Files with uncommitted changes, or undefined when git can't tell us. */
+/**
+ * Target files that git can't restore: modified, staged, untracked or ignored. Undefined when git
+ * can't tell us (not a repository).
+ */
 function dirtyFiles(cwd: string, files: string[]): string[] | undefined {
+  if (files.length === 0) return [];
   try {
-    const out = execFileSync("git", ["status", "--porcelain", "--", ...files], {
-      cwd,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    });
+    const out = execFileSync(
+      "git",
+      ["status", "--porcelain", "--ignored", "--untracked-files=all", "--", ...files],
+      {
+        cwd,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      },
+    );
     return out
       .split("\n")
       .filter(Boolean)
-      .map((l) => l.slice(3));
+      .map(
+        (l) =>
+          `${l.slice(3)}${l.startsWith("!!") ? " (ignored by git)" : l.startsWith("??") ? " (untracked)" : ""}`,
+      );
   } catch {
     return undefined;
   }
@@ -105,7 +116,13 @@ const main = defineCommand({
   },
   async run({ args }) {
     const cwd = process.cwd();
-    const root = path.resolve(cwd, args.root ?? ".");
+    const rootArg = path.resolve(cwd, args.root ?? ".");
+    if (!existsSync(rootArg)) {
+      console.error(pc.red(`auto-server-split: ${args.root ?? "."} does not exist`));
+      process.exitCode = EXIT_ERROR;
+      return;
+    }
+    const root = realpathSync(rootArg);
     const positional = (args._ as string[]).filter(Boolean);
     for (const p of positional) {
       if (!existsSync(path.resolve(cwd, p))) {
@@ -114,11 +131,18 @@ const main = defineCommand({
         return;
       }
     }
-    const paths = positional.map((p) => path.relative(root, path.resolve(cwd, p)) || ".");
-    if (args.interactive) {
+    const paths = positional.map(
+      (p) => path.relative(root, realpathSync(path.resolve(cwd, p))) || ".",
+    );
+    if (args.interactive && (args.json || args.check)) {
       console.error(
-        pc.red("auto-server-split: --interactive is not available yet (planned for 1.0)"),
+        pc.red("auto-server-split: --interactive can't be combined with --json or --check"),
       );
+      process.exitCode = EXIT_ERROR;
+      return;
+    }
+    if (args.interactive && !process.stdin.isTTY) {
+      console.error(pc.red("auto-server-split: --interactive needs a terminal"));
       process.exitCode = EXIT_ERROR;
       return;
     }
@@ -143,7 +167,7 @@ const main = defineCommand({
         ...(args.config ? { configFile: args.config } : {}),
         measure: args.measure !== false,
         onFile: (file) => {
-          if (json) return;
+          if (json || args.interactive) return;
           if (file.status === "split") {
             log(describeSplit(file));
             if (!args.check) log(colorDiff(file.diff));
@@ -160,11 +184,23 @@ const main = defineCommand({
       return;
     }
 
-    const files = report.files;
+    let files = report.files;
+    let toWrite = args.write ? files.filter((f) => f.status === "split") : [];
+    if (args.interactive) {
+      const { reviewInteractively } = await import("./interactive.js");
+      toWrite = await reviewInteractively(files, report.rerun, {
+        input: process.stdin,
+        output: process.stdout,
+        colorDiff,
+        describe: describeSplit,
+      });
+      const acceptedByFile = new Map(toWrite.map((f) => [f.file, f]));
+      files = files.map((f) => acceptedByFile.get(f.file) ?? f);
+    }
 
     const splits = files.filter((f) => f.status === "split");
-    if (args.write) {
-      const touched = splits.flatMap((f) => Object.keys(f.outputs));
+    if (toWrite.length > 0) {
+      const touched = toWrite.flatMap((f) => Object.keys(f.outputs));
       if (!args["allow-dirty"]) {
         const dirty = dirtyFiles(
           root,
@@ -182,14 +218,14 @@ const main = defineCommand({
         if (dirty.length > 0) {
           console.error(
             pc.red(
-              `auto-server-split: refusing to write; these files have uncommitted changes:\n  ${dirty.join("\n  ")}\nCommit them or pass --allow-dirty.`,
+              `auto-server-split: refusing to write; these files have uncommitted changes (or aren't tracked by git):\n  ${dirty.join("\n  ")}\nCommit them or pass --allow-dirty.`,
             ),
           );
           process.exitCode = EXIT_ERROR;
           return;
         }
       }
-      for (const file of splits) {
+      for (const file of toWrite) {
         for (const [rel, content] of Object.entries(file.outputs)) {
           const abs = path.join(root, rel);
           mkdirSync(path.dirname(abs), { recursive: true });
@@ -209,16 +245,20 @@ const main = defineCommand({
       log();
       log(pc.bold("Summary"));
       log(`  files scanned:  ${report.filesScanned} (${files.length} with "use client")`);
-      log(
-        `  files split:    ${splits.length}${args.write ? " (written)" : args.check ? "" : " (dry run, nothing written)"}`,
-      );
+      const written = Boolean(args.write || args.interactive);
+      const writeNote = written
+        ? ` (${toWrite.length} written)`
+        : args.check
+          ? ""
+          : " (dry run, nothing written)";
+      log(`  files split:    ${splits.length}${writeNote}`);
       log(`  files skipped:  ${skipped.length}`);
       for (const [code, count] of [...byCode].sort((a, b) => b[1] - a[1])) {
         log(`    ${String(count).padStart(3)}  ${code.padEnd(30)} ${pc.dim(SKIP_TITLES[code])}`);
       }
       if (report.files.some((f) => f.bytesSaved))
         log(`  estimated saving: ${formatBytes(saved)} gzip of client JavaScript`);
-      if (!args.write && !args.check && splits.length > 0)
+      if (!written && !args.check && splits.length > 0)
         log(pc.dim("\nRun again with --write to apply."));
     }
 

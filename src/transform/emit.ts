@@ -40,6 +40,8 @@ export type EmitInput = {
   rebaseSpecifier: (specifier: string) => string;
   /** Non-exported, fully interactive components that move wholesale into the island file. */
   movedComponents?: ModuleDecl[];
+  /** Island renames: default name -> chosen name. */
+  renames?: Readonly<Record<string, string>>;
 };
 
 export type EmitOutput = { serverText: string; islandText: string; islands: IslandPlan[] };
@@ -59,17 +61,34 @@ function mergeRanges(ranges: Range[]): Range[] {
 
 const inAny = (ranges: Range[], pos: number) => ranges.some((r) => pos >= r.start && pos < r.end);
 
-/** Assigns deterministic island names: <Component><PascalCase root tag>, then 2, 3... on collision. */
-function assignNames(plans: ComponentPlan[], taken: Set<string>): void {
-  for (const plan of plans) {
-    for (const island of plan.islands) {
-      const base = islandBaseName(plan.component.name, island.rootTag);
-      let name = base;
-      for (let n = 2; taken.has(name); n++) name = `${base}${n}`;
-      taken.add(name);
-      island.name = name;
-    }
+/**
+ * Assigns deterministic island names: <Component><PascalCase root tag>, then 2, 3... on collision.
+ * `renames` maps a default name to a user-chosen one (interactive mode).
+ */
+function assignNames(
+  plans: ComponentPlan[],
+  taken: Set<string>,
+  renames: Readonly<Record<string, string>>,
+): string | undefined {
+  // Default names first, so a rename never shifts another island's default name.
+  const islands = plans.flatMap((plan) => plan.islands.map((island) => ({ plan, island })));
+  for (const { plan, island } of islands) {
+    const base = islandBaseName(plan.component.name, island.rootTag);
+    let name = base;
+    for (let n = 2; taken.has(name); n++) name = `${base}${n}`;
+    taken.add(name);
+    island.name = name;
   }
+  for (const { island } of islands) {
+    const renamed = renames[island.name];
+    if (renamed === undefined || renamed === island.name) continue;
+    if (!/^[A-Z][A-Za-z0-9_$]*$/.test(renamed)) return `"${renamed}" is not a valid component name`;
+    if (taken.has(renamed)) return `"${renamed}" is already used in this file`;
+    taken.delete(island.name);
+    taken.add(renamed);
+    island.name = renamed;
+  }
+  return undefined;
 }
 
 function importClauseText(
@@ -136,7 +155,8 @@ export function emitSplit(input: EmitInput): Outcome<EmitOutput> {
   for (const b of imports.bindings) taken.add(b.local);
   for (const d of shape.moduleDecls) d.names.forEach((n) => taken.add(n));
   for (const c of shape.components) taken.add(c.name);
-  assignNames(plans, taken);
+  const nameProblem = assignNames(plans, taken, input.renames ?? {});
+  if (nameProblem) return skip("unsupported-pattern", nameProblem);
   const islands = plans.flatMap((p) => p.islands);
 
   // ---- island file -----------------------------------------------------------------------------
@@ -628,7 +648,20 @@ function renderIsland(
   const semi = style.semi ? ";" : "";
   const ind = style.indent;
   const lines: string[] = [`export function ${island.name}(${signature}) {`];
-  for (const unit of island.units) lines.push(renderUnit(unit, sf, ind));
+  // Keep the original's blank lines between moved statements (and after the last one).
+  const blankAfter = (node: ts.Node) => {
+    const rest = text.slice(node.getEnd());
+    const gap = /^[^\S\n]*(?:\/\/[^\n]*)?\n([^\S\n]*\n)/.exec(rest);
+    return gap !== null;
+  };
+  island.units.forEach((unit, i) => {
+    lines.push(renderUnit(unit, sf, ind));
+    const next = island.units[i + 1];
+    const separated = next
+      ? /\n[^\S\n]*\n/.test(text.slice(unit.node.getEnd(), statementLineRange(sf, next.node).start))
+      : blankAfter(unit.node);
+    if (separated) lines.push("");
+  });
 
   const root = island.root.node;
   const rootStart = root.getStart(sf);

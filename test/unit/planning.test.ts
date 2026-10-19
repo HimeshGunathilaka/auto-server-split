@@ -98,6 +98,79 @@ export default function Comp({ name }: { name: string }) {
   });
 });
 
+describe("effects", () => {
+  it("attach an effect to the island that owns the state it uses", async () => {
+    const f = await splitOne(`"use client";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
+export default function Comp({ href, title }: { href: string; title: string }) {
+  const pathname = usePathname();
+  const [active, setActive] = useState(pathname === href);
+  useEffect(() => {
+    setActive(pathname === href);
+  }, [pathname, href]);
+  return (
+    <li>
+      <span>{title}</span>
+      <Link href={href} className={active ? "active" : ""}>
+        {title}
+      </Link>
+    </li>
+  );
+}
+`);
+    expect(f.status).toBe("split");
+    expect(f.islands.map((i) => i.rootTag)).toEqual(["Link"]);
+    expect(island(f)).toContain("useEffect(() => {");
+    expect(server(f)).not.toContain("useEffect");
+  });
+
+  it("never duplicate an effect into per-item list islands", async () => {
+    const f = await splitOne(`"use client";
+import { useEffect, useState } from "react";
+export default function Comp({ items }: { items: string[] }) {
+  const [count, setCount] = useState(0);
+  useEffect(() => {
+    document.title = String(count);
+  }, [count]);
+  return (
+    <section>
+      <h1>Items</h1>
+      <ul>
+        {items.map((item) => (
+          <li key={item}>
+            <button onClick={() => setCount(count + 1)}>{item}</button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+`);
+    expect(f.islands.map((i) => i.rootTag)).toEqual(["ul"]);
+  });
+
+  it("still refuse an effect that uses no island's state", async () => {
+    const f = await splitOne(`"use client";
+import { useEffect, useState } from "react";
+export default function Comp({ page }: { page: string }) {
+  const [n, setN] = useState(0);
+  useEffect(() => {
+    document.title = page;
+  }, [page]);
+  return (
+    <div>
+      <h1>{page}</h1>
+      <button onClick={() => setN(n + 1)}>{n}</button>
+    </div>
+  );
+}
+`);
+    expect(f.skipped?.code).toBe("unsupported-pattern");
+  });
+});
+
 describe("grouping (union-find + LCA)", () => {
   it("merges anchors that share a handler", async () => {
     const f = await splitOne(`"use client";
@@ -237,6 +310,31 @@ export default function Comp({ items }: { items: string[] }) {
     expect(island(f)).toContain("useState");
   });
 
+  it("allows per-item islands that only read shared context (usePathname)", async () => {
+    const f = await splitOne(`"use client";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+export default function Comp({ links }: { links: { href: string; label: string }[] }) {
+  const pathname = usePathname();
+  return (
+    <nav>
+      <h2>Menu</h2>
+      <ul>
+        {links.map((l) => (
+          <li key={l.href}>
+            <Link href={l.href} className={pathname === l.href ? "active" : ""}>{l.label}</Link>
+          </li>
+        ))}
+      </ul>
+    </nav>
+  );
+}
+`);
+    expect(f.status).toBe("split");
+    expect(server(f)).toContain("<CompLi key={l.href} l={l} />");
+    expect(island(f)).toContain("const pathname = usePathname();");
+  });
+
   it("refuses interactive elements inside other callbacks", async () => {
     const f = await splitOne(`"use client";
 export default function Comp({ items }: { items: string[] }) {
@@ -249,6 +347,29 @@ export default function Comp({ items }: { items: string[] }) {
 }
 `);
     expect(f.skipped?.code).toBe("render-prop");
+  });
+});
+
+describe("arrow-function components", () => {
+  it("are not mistaken for module-level values in multi-component files", async () => {
+    const f = await splitOne(`"use client";
+import { useState } from "react";
+const Icon = () => <svg className="icon" />;
+const Comp = ({ title }: { title: string }) => {
+  const [open, setOpen] = useState(false);
+  return (
+    <section>
+      <h2>{title}</h2>
+      <Icon />
+      <button onClick={() => setOpen(!open)}>{open ? "close" : "open"}</button>
+    </section>
+  );
+};
+export default Comp;
+`);
+    expect(f.skipped).toBeUndefined();
+    expect(f.islands.map((i) => i.name)).toEqual(["CompButton"]);
+    expect(server(f)).toContain('const Icon = () => <svg className="icon" />;');
   });
 });
 

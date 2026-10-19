@@ -129,9 +129,12 @@ export function analyzeFileShape(ctx: AnalysisContext, facts: FileFacts): Outcom
         });
       } else {
         if (exported) {
+          const why = isCapitalized(name)
+            ? "doesn't return JSX, so it isn't treated as a component"
+            : "is not a component";
           return skip(
             "exports-non-components",
-            `exports ${name || "a function"}, which is not a component`,
+            `exports ${name || "a function"}, which ${why}`,
             locOf(ctx, statement),
           );
         }
@@ -148,6 +151,7 @@ export function analyzeFileShape(ctx: AnalysisContext, facts: FileFacts): Outcom
     if (ts.isVariableStatement(statement)) {
       const exported = hasExportModifier(statement);
       const isConst = (statement.declarationList.flags & ts.NodeFlags.Const) !== 0;
+      let isComponentStatement = false;
       for (const decl of statement.declarationList.declarations) {
         const name = ts.isIdentifier(decl.name) ? decl.name.text : undefined;
         const init = decl.initializer;
@@ -165,6 +169,7 @@ export function analyzeFileShape(ctx: AnalysisContext, facts: FileFacts): Outcom
             return skip("unsupported-pattern", `${name} is an async function`, locOf(ctx, decl));
           }
           components.push({ name, fn, statement, exported: exported ? "named" : "none" });
+          isComponentStatement = true;
           continue;
         }
         if (name && init && isCapitalized(name)) {
@@ -185,6 +190,7 @@ export function analyzeFileShape(ctx: AnalysisContext, facts: FileFacts): Outcom
           );
         }
       }
+      if (isComponentStatement) continue; // a `const X = () => <jsx />` component, not a module value
       if (!isConst) {
         return skip(
           "unsupported-pattern",

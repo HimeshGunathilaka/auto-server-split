@@ -2,6 +2,22 @@
 
 All notable changes to this project are documented here. The project follows [Semantic Versioning](https://semver.org/).
 
+## 1.0.0 — interactive mode, docs, benchmarks
+
+- `--interactive`: `[y]es / [n]o / [r]ename islands / [d]iff / [q]uit`; renames re-run the engine
+  and its self-check.
+- Config file loading (`.ts`/`.mts` via esbuild, `.mjs`/`.js`, `.json`) with validation of unknown
+  keys and values. `--json` report.
+- `--write` refuses untracked and git-ignored targets as well as modified ones.
+- Effects that sync island state move with that island; shared-context hooks (`usePathname`…) are
+  allowed in per-item list islands; `const X = () => <jsx/>` components are no longer mistaken for
+  module constants in multi-component files; blank lines between moved statements are kept.
+- Real-path resolution of the project root (symlinked checkouts, macOS temp dirs).
+- README, `docs/api.md`, `docs/configuration.md`, `docs/eslint.md`, `docs/benchmarks.md`.
+- `scripts/benchmark.mjs` (three real App Router apps) and `scripts/perf.mjs` (500-file dry run in
+  ~7 s).
+- CLI and interactive-mode tests; fixture 32 (`islandsDir`).
+
 ## 0.5.0 — ESLint plugin
 
 - `auto-server-split/eslint`: flat-config plugin with `prefer-server-split` (report only, on the

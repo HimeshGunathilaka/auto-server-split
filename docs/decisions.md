@@ -277,3 +277,50 @@ that applies the split.
   only suggests splits the CLI would actually perform.
 - ESLint rules are synchronous, so the rule reads `auto-split.config.json` but not `.ts`/`.mjs`
   config files. Rule options (`minStaticRatio`) override it.
+
+## 1.0 — interactive mode, docs, benchmarks
+
+### Interactive renames go back through the engine
+
+`[r]ename` doesn't search-and-replace the generated text. It re-runs the file with a
+`default name → new name` map, so the rename passes the same validation (a valid component name,
+not already used in the file) and the same self-check as any other split. Default names are
+assigned first, so renaming one island never changes another island's default name.
+
+### `--write` also refuses untracked and git-ignored targets
+
+"Uncommitted changes" includes files git can't restore: untracked (`??`) and ignored (`!!`) files
+are refused too (`git status --porcelain --ignored --untracked-files=all`). `--allow-dirty`
+overrides this.
+
+### Paths are resolved to real paths
+
+The project root is resolved with `realpath`, because TypeScript resolves symlinks (for example
+macOS `/var` → `/private/var`), and globbed paths must match the program's file names.
+
+### Effects join the island whose state they use
+
+A client statement that no element reads directly (typically a `useEffect` that syncs state) is
+attached to the island that owns the client state it depends on. If it depends on several
+islands' state, they merge. If it depends on none, the file is still skipped
+(`unsupported-pattern`): there's no island to carry it without changing when it runs. An island
+that carries an effect is never a per-item list island, so the effect still runs once.
+
+### Shared-context hooks may run per list item
+
+`usePathname`, `useSearchParams`, `useParams`, `useRouter`, `useSelectedLayoutSegment(s)`,
+`useContext` and `use(Context)` return the same value for every caller, so a per-item `.map`
+island may call them. Any other hook (state, refs, effects, custom hooks) still hoists the island
+above the `.map`.
+
+### Benchmarks
+
+`scripts/benchmark.mjs` clones three App Router apps at pinned commits (vercel/next-learn
+dashboard, vercel/commerce, timlrx/tailwind-nextjs-starter-blog) outside the repository, installs
+them with lifecycle scripts disabled, and records split/skip rates and estimated savings with the
+default thresholds and with thresholds off. With `--build`, it builds each app before and after
+`--write` and compares the app's own `tsc --noEmit` output. Results: zero self-check failures,
+zero internal errors, zero new type errors, and every app that built before still builds after.
+The next-learn dashboard needs a Postgres database at build time, so its build can't run here;
+the typecheck comparison covers it. These apps are already well-factored, so there are few splits;
+see `docs/benchmarks.md`.

@@ -1,6 +1,6 @@
 {
   "name": "auto-server-split",
-  "version": "0.5.0",
+  "version": "1.0.0",
   "description": "Split partly-interactive \"use client\" components into server components plus small generated client islands.",
   "license": "MIT",
   "type": "module",
@@ -42,7 +42,8 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "node e2e/run.mjs"
+    "test:e2e": "node e2e/run.mjs",
+    "pretest": "tsup --silent"
   },
   "dependencies": {
     "citty": "0.2.2",

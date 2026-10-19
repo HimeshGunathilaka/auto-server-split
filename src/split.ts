@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createTwoFilesPatch } from "diff";
 import fg from "fast-glob";
@@ -87,10 +87,15 @@ export function createRunContext(
   };
 }
 
-export async function runSplit(
-  options: SplitOptions = {},
-): Promise<SplitResult & { filesScanned: number }> {
-  const root = path.resolve(options.root ?? process.cwd());
+export async function runSplit(options: SplitOptions = {}): Promise<
+  SplitResult & {
+    filesScanned: number;
+    /** Re-runs one file with island renames (interactive mode). */
+    rerun: (relFile: string, renames: Readonly<Record<string, string>>) => Promise<FileResult>;
+  }
+> {
+  // Real path: TypeScript resolves symlinks (e.g. macOS /var -> /private/var), so globbed paths must too.
+  const root = realpathSync(path.resolve(options.root ?? process.cwd()));
   const configFile = options.noConfigFile
     ? undefined
     : options.configFile
@@ -127,7 +132,11 @@ export async function runSplit(
     }
   }
   await measurer?.dispose();
-  return { files, filesScanned: targets.length };
+  return {
+    files,
+    filesScanned: targets.length,
+    rerun: (relFile, renames) => processFile(run, path.resolve(root, relFile), renames),
+  };
 }
 
 function selectTargets(
@@ -164,7 +173,11 @@ function rel(root: string, file: string): string {
   return path.relative(root, file).split(path.sep).join("/");
 }
 
-async function processFile(run: RunContext, file: string): Promise<FileResult> {
+export async function processFile(
+  run: RunContext,
+  file: string,
+  renames: Readonly<Record<string, string>> = {},
+): Promise<FileResult> {
   const relFile = rel(run.root, file);
   const base: FileResult = {
     file: relFile,
@@ -175,7 +188,7 @@ async function processFile(run: RunContext, file: string): Promise<FileResult> {
     outputs: {},
   };
   try {
-    const planned = await planFile(run, file);
+    const planned = await planFile(run, file, renames);
     if (!planned.ok) return { ...base, skipped: planned.skip };
     const value = planned.value;
     const diff = Object.entries(value.outputs)
@@ -228,7 +241,11 @@ export type Analyzed = {
 };
 
 /** Analysis + rewrite, without formatting, self-check or measurement. Synchronous. */
-export function analyzeFile(run: RunContext, file: string): Outcome<Analyzed> {
+export function analyzeFile(
+  run: RunContext,
+  file: string,
+  renames: Readonly<Record<string, string>> = {},
+): Outcome<Analyzed> {
   const { loaded, graph, config, framework, root } = run;
   const node = graph.nodes.get(file);
   if (!node?.inProgram) {
@@ -393,6 +410,7 @@ export function analyzeFile(run: RunContext, file: string): Outcome<Analyzed> {
   const islandSpecifier = relativeSpecifier(path.dirname(file), islandFile);
   const originalSpecifier = relativeSpecifier(dir, file);
   const emitted = emitSplit({
+    renames,
     ctx,
     shape: shape.value,
     imports,
@@ -415,6 +433,7 @@ export function analyzeFile(run: RunContext, file: string): Outcome<Analyzed> {
     rootTag: rootTagOf(c, sf),
     props: [],
     line: sf.getLineAndCharacterOfPosition(c.statement.getStart(sf)).line + 1,
+    moved: true,
   }));
   const islands: IslandInfo[] = [
     ...emitted.value.islands.map((i) => ({
@@ -471,9 +490,13 @@ export function checkAnalyzed(
   });
 }
 
-async function planFile(run: RunContext, file: string): Promise<Outcome<Planned>> {
+async function planFile(
+  run: RunContext,
+  file: string,
+  renames: Readonly<Record<string, string>>,
+): Promise<Outcome<Planned>> {
   const { config, root } = run;
-  const analyzed = analyzeFile(run, file);
+  const analyzed = analyzeFile(run, file, renames);
   if (!analyzed.ok) return analyzed;
   const a = analyzed.value;
   let serverText = a.serverText;

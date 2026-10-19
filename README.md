@@ -1,12 +1,217 @@
 # auto-server-split
 
-Split partly-interactive `"use client"` components into a Server Component plus small generated
-client islands, so the browser downloads less JavaScript. No manual refactoring.
+**Split partly-interactive `"use client"` components into a Server Component plus small generated client islands, so the browser downloads less JavaScript, with no manual refactoring.**
 
-> Work in progress. The full README lands with 1.0. See `docs/skip-reasons.md` and `docs/decisions.md`.
+For the Next.js App Router and React Server Components. It ships as a CLI codemod, a programmatic API and an ESLint plugin, all built on the same analysis engine. When the tool isn't sure a split is safe, it skips the file and tells you why.
+
+## Before / after
+
+```tsx
+// PostCard.tsx (before)
+"use client";
+import { format } from "date-fns";
+import { marked } from "marked";
+import { useState } from "react";
+
+type Post = { title: string; date: string; body: string };
+
+export default function PostCard({ post }: { post: Post }) {
+  const [liked, setLiked] = useState(false);
+  return (
+    <article>
+      <h2>{post.title}</h2>
+      <time>{format(new Date(post.date), "PPP")}</time>
+      <div dangerouslySetInnerHTML={{ __html: marked(post.body) as string }} />
+      <button onClick={() => setLiked(!liked)}>{liked ? "♥" : "♡"}</button>
+    </article>
+  );
+}
+```
+
+```tsx
+// PostCard.tsx (after): a Server Component; date-fns and marked no longer ship to the browser
+import { format } from "date-fns";
+import { marked } from "marked";
+import { PostCardButton } from "./PostCard.client";
+
+type Post = { title: string; date: string; body: string };
+
+export default function PostCard({ post }: { post: Post }) {
+  return (
+    <article>
+      <h2>{post.title}</h2>
+      <time>{format(new Date(post.date), "PPP")}</time>
+      <div dangerouslySetInnerHTML={{ __html: marked(post.body) as string }} />
+      <PostCardButton />
+    </article>
+  );
+}
+```
+
+```tsx
+// PostCard.client.tsx (generated)
+"use client";
+import { useState } from "react";
+
+export function PostCardButton() {
+  const [liked, setLiked] = useState(false);
+  return <button onClick={() => setLiked(!liked)}>{liked ? "♥" : "♡"}</button>;
+}
+```
+
+In the e2e app that renders this component, the route ships **18.5 KB gzip less JavaScript**. The page's HTML is identical before and after, and the DOM stays identical after every click.
+
+## Install
+
+Node.js 20 or later. The project's own TypeScript and Prettier are used when present.
 
 ```bash
-npx auto-server-split app components          # dry run: prints the diff, writes nothing
-npx auto-server-split app components --write  # apply
-npx auto-server-split --check                 # CI: exit 2 if a split is available
+npm install --save-dev auto-server-split     # or pnpm add -D / yarn add -D
+npx auto-server-split --help
 ```
+
+## CLI
+
+```bash
+npx auto-server-split <paths...> [--dry-run | --write | --check] [--interactive] [--json]
+                                 [--config <file>] [--root <dir>] [--allow-dirty] [--verbose] [--no-measure]
+```
+
+| Flag | What it does |
+|---|---|
+| *(default)* `--dry-run` | Prints a coloured unified diff per file, the islands and the estimated KB saved. Skipped files show their reason. Nothing is written. |
+| `--write` | Applies the changes. Refuses if any target file has uncommitted changes, is untracked or is git-ignored (or the project isn't a git repository), unless you pass `--allow-dirty`. |
+| `--check` | For CI: exits `2` if any split is available. Changes nothing. |
+| `--interactive` | Walks through each proposed split: `[y]es / [n]o / [r]ename islands / [d]iff / [q]uit`. Renames go back through the engine and its self-check. |
+| `--json` | Machine-readable report with the same shape as the API result. |
+| `--config <file>` | Config file (default: `auto-split.config.{ts,mts,mjs,js,json}` in the project root). |
+| `--root <dir>` | Project root, where `tsconfig.json` lives (default: the current directory). |
+| `--no-measure` | Skips the esbuild size measurement (faster; `minBytesSaved` isn't applied). |
+| `--verbose` | Prints stack traces for internal errors. |
+
+Without paths, the config's `include` globs are used (`app/**`, `components/**`, `src/**`).
+Exit codes: `0` ok, `1` internal error or bad input, `2` splits available (with `--check`).
+The summary lists files scanned, files split, files skipped grouped by reason, and the total estimated saving.
+
+Splitting a file can make another file splittable: a component that was only imported by a client
+component becomes splittable once that importer turns into a Server Component. Running the tool
+again picks these up.
+
+## API
+
+```ts
+import { split } from "auto-server-split";
+
+const result = await split({
+  root: process.cwd(),        // project root (where tsconfig.json lives)
+  paths: ["app", "components"],
+  write: false,
+  config: {},                 // overrides the config file
+});
+
+for (const file of result.files) {
+  console.log(file.file, file.status, file.skipped?.code, file.bytesSaved?.conservative);
+}
+```
+
+See [docs/api.md](docs/api.md) for the full result type.
+
+## ESLint
+
+```js
+// eslint.config.js
+import autoSplit from "auto-server-split/eslint";
+export default [/* your TypeScript/JSX parser config */, autoSplit.configs.recommended];
+```
+
+The rule `auto-server-split/prefer-server-split` reports on the `"use client"` directive:
+
+```
+PostCard is 80% static with 1 interactive island (<button>). Run: npx auto-server-split app/blog/PostCard.tsx --write
+```
+
+It has no autofix, because a split creates a new file and ESLint fixes can't do that. The CLI is the fixer. See [docs/eslint.md](docs/eslint.md).
+
+## Configuration
+
+```ts
+// auto-split.config.ts
+import { defineConfig } from "auto-server-split";
+
+export default defineConfig({
+  include: ["app/**", "components/**", "src/**"],
+  exclude: ["**/*.test.*", "**/*.stories.*"],
+  clientOnlyPackages: ["my-ui-lib/interactive"], // added to the built-in list
+  serverSafeHooks: [],                           // e.g. ["useTranslations"]
+  clientFileSuffix: ".client",                   // or islandsDir: "_islands"
+  minBytesSaved: 2048,                           // gzip bytes, conservative estimate
+  minStaticRatio: 0.3,
+  prettier: "auto",                              // format touched files with the project's Prettier config
+  mongoose: { autoSerialize: false },
+});
+```
+
+Unknown keys are an error. See [docs/configuration.md](docs/configuration.md).
+
+## Skip reasons
+
+Every skip has a stable code, a one-sentence message and, where possible, a source location.
+[docs/skip-reasons.md](docs/skip-reasons.md) has an example and a fix for each.
+
+| Code | When |
+|---|---|
+| `imported-by-client` | A client module imports the file (directly or through a barrel) |
+| `exports-non-components` | The file exports hooks, utilities or values |
+| `state-spans-component` | Client state is used across the whole returned element |
+| `context-provider` | The file creates or provides a Context |
+| `css-in-js-runtime` | styled-components, Emotion, styled-jsx… |
+| `non-serializable-prop` | A value crossing the boundary isn't serializable |
+| `untyped-boundary` | `.js`/`.jsx` file and the prop types can't be proven |
+| `spread-props` | A spread that can't be proven serializable |
+| `conditional-hooks-or-returns` | Conditional hooks, or early returns that depend on client state |
+| `class-component` | The file contains a class component |
+| `dynamic-import` / `render-prop` / `hoc` | `next/dynamic`/`lazy`/`import()`, render props, `memo`/`forwardRef` |
+| `server-env-difference` | Reads a non-`NEXT_PUBLIC_` env var |
+| `no-islands` / `fully-interactive` | No client code at all (the directive may be unnecessary), or nothing would stay on the server |
+| `below-threshold` | Below `minBytesSaved` or `minStaticRatio` |
+| `output-exists` / `would-create-route` | File-system conflicts |
+| `unsupported-pattern` | Valid code this version doesn't handle (the message says which) |
+| `self-check-failed` | The generated code failed the self-check |
+| `parse-error` / `internal-error` | Bugs: reported per file, never crash the run |
+
+## How it decides
+
+1. **Module graph.** Every file the tsconfig covers (plus JS/MDX files it doesn't), with static imports, re-exports, `import()` and `next/dynamic`. Anything reachable from a `"use client"` module is client code.
+2. **Candidates.** A `"use client"` file is a candidate only if every importer is a server module that renders its components as `<X />`, it exports only components and types, and nothing at module level behaves differently on the server.
+3. **Client-only marking.** Hooks, event/ref/function props, browser globals, client-only packages (framer-motion, Radix, react-hook-form…), render nondeterminism (`Date.now()`, `Math.random()`), and anything that can't be proven server-safe (unknown React packages, local modules that use hooks) are client-only. Taint propagates through the component body to a fixpoint.
+4. **Islands.** Elements that use client-only code are anchors. Anchors that share state merge (union-find), the island root is their lowest common ancestor, and an escape check grows the island until no client value is read outside it. In `.map()` lists, the mapped element becomes a per-item island, unless that would duplicate component-level state. Effects join the island whose state they use. Static, non-trivial subtrees inside an island stay on the server as `children` ("donut").
+5. **Boundary.** Free variables become props and are proven serializable with the type checker (React's rules: primitives, plain objects, arrays, `Date`, `Map`, `Set`, typed arrays, Promises, JSX, Server Actions). Non-serializable helpers are copied into the island instead.
+6. **Rewrite.** magic-string range edits keep every untouched byte of the original. Imports move, are copied or are pruned, the island file is generated, and Prettier runs only if the project has a config.
+7. **Self-check.** Before anything is reported or written, the output is typechecked in memory (no new diagnostics allowed), re-analysed (no client code may remain in the server file), and every prop is re-checked.
+8. **Measure.** The original file and the island file are bundled with esbuild (react/next external) and the gzip sizes compared. The conservative number leaves out dependencies other client modules still ship.
+
+## Limitations
+
+- **It's conservative.** On three well-known open-source apps, most `"use client"` files are skipped, because they are already genuinely interactive ([docs/benchmarks.md](docs/benchmarks.md)). The tool pays off in codebases that put `"use client"` high in the tree.
+- **Server vs browser rendering differences** that the tool can't see stay a risk: for example, timezone- or locale-dependent formatting moves from the browser to the server (`format(new Date(x), "PPP")` in the example above). Nondeterministic calls it *can* see (`Date.now()`, `Math.random()`, `new Date()`) are kept on the client.
+- **Safety of local modules is decided per module, not per export**, so one client-only helper in a utility module keeps every caller of that module on the client.
+- Third-party React packages are client-only unless they have a `"use client"` entry or are on the small built-in server-safe list. Unknown packages stay in islands.
+- Not handled in v1 (they skip): class components, `memo`/`forwardRef`, render props, `next/dynamic`, Context providers, runtime CSS-in-JS, statements other than declarations/hook calls/early returns in a component body, and existing `X.client.tsx` files (it never merges).
+- The ESLint rule reads only `auto-split.config.json` (rules are synchronous) and caches the module graph per lint process.
+- Next.js only for now; framework specifics live in `src/frameworks/next.ts`.
+
+## Development
+
+```bash
+pnpm install
+pnpm test          # build + unit + fixture tests
+pnpm test:e2e      # next build before/after on e2e/apps/*, DOM equality, Playwright
+node scripts/perf.mjs 500            # dry run on a synthetic 500-file app
+node scripts/benchmark.mjs --build   # real apps, writes docs/benchmarks.md
+```
+
+Fixtures live in `fixtures/NN-name/` (`input/` plus `output/` or `expected-skip.json`). `UPDATE_FIXTURES=1 pnpm test` regenerates outputs; review those diffs by hand.
+
+## License
+
+MIT

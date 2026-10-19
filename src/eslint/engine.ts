@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import type { Outcome } from "../analysis/skip.js";
 import { ConfigError, resolveConfig, validateConfig } from "../config/config.js";
@@ -67,8 +67,10 @@ export function analyzeForLint(args: {
   tsconfig: string | undefined;
   options: LintOptions;
 }): Outcome<Analyzed> | undefined {
-  const tsconfig = args.tsconfig ?? findTsconfig(args.file);
-  if (!tsconfig) return undefined;
+  const found = args.tsconfig ?? findTsconfig(args.file);
+  if (!found || !existsSync(found)) return undefined;
+  const tsconfig = realpathSync(found);
+  const file = realpathSync(args.file);
   const root = path.dirname(tsconfig);
   const minStaticRatio = args.options.minStaticRatio ?? 0.5;
   const key = `${args.typed ? "typed" : "lazy"}\0${tsconfig}\0${minStaticRatio}`;
@@ -78,16 +80,16 @@ export function analyzeForLint(args: {
     run = createRunContext(root, config, { lazy: !args.typed, tsconfig });
     runs.set(key, run);
   }
-  const node = run.graph.nodes.get(args.file);
+  const node = run.graph.nodes.get(file);
   if (!node?.inProgram) return undefined; // not covered by the tsconfig: importers can't be verified
 
-  if (!args.typed) ensureLoaded(run.loaded, [args.file, ...importerClosure(run, args.file)]);
-  const sf = run.loaded.project.getSourceFile(args.file);
+  if (!args.typed) ensureLoaded(run.loaded, [file, ...importerClosure(run, file)]);
+  const sf = run.loaded.project.getSourceFile(file);
   if (!sf) return undefined;
   // Analyse what the editor/CLI is linting, not what's on disk.
   if (sf.getFullText() !== args.text) sf.replaceWithText(args.text);
 
-  const analyzed = analyzeFile(run, args.file);
+  const analyzed = analyzeFile(run, file);
   if (!analyzed.ok || args.options.selfCheck === false) return analyzed;
   const checked = checkAnalyzed(run, analyzed.value);
   return checked.ok ? analyzed : checked;
