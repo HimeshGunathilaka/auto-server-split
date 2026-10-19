@@ -1,0 +1,7 @@
+node_modules
+dist
+coverage
+.next
+*.tsbuildinfo
+.DS_Store
+e2e/.tmp

@@ -1,0 +1,90 @@
+{
+  "name": "auto-server-split",
+  "version": "0.0.0",
+  "description": "Split partly-interactive \"use client\" components into server components plus small generated client islands.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@10.33.3",
+  "bin": {
+    "auto-server-split": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./eslint": {
+      "types": "./dist/eslint/index.d.ts",
+      "import": "./dist/eslint/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "keywords": [
+    "nextjs",
+    "react-server-components",
+    "rsc",
+    "use client",
+    "codemod",
+    "eslint-plugin"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "node e2e/run.mjs"
+  },
+  "dependencies": {
+    "citty": "0.2.2",
+    "diff": "9.0.0",
+    "esbuild": "0.28.2",
+    "fast-glob": "3.3.3",
+    "magic-string": "1.4.3",
+    "picocolors": "1.1.1",
+    "ts-morph": "28.0.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.20.5",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "date-fns": "4.4.0",
+    "eslint": "10.13.0",
+    "marked": "18.1.1",
+    "next": "16.4.2",
+    "prettier": "3.9.10",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "tsup": "9.0.0",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.71.2",
+    "vitest": "5.0.5"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  },
+  "peerDependencies": {
+    "typescript": ">=5.4",
+    "prettier": ">=3"
+  },
+  "peerDependenciesMeta": {
+    "typescript": {
+      "optional": true
+    },
+    "prettier": {
+      "optional": true
+    }
+  }
+}

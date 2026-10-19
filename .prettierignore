@@ -1,0 +1,5 @@
+fixtures
+e2e/apps
+dist
+pnpm-lock.yaml
+BUILD_PROMPT.md
