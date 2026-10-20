@@ -9,6 +9,8 @@ import { ConfigError } from "./config/config.js";
 import { formatBytes, runSplit } from "./split.js";
 import type { FileResult, SkipCode } from "./types.js";
 
+declare const __VERSION__: string;
+
 const EXIT_OK = 0;
 const EXIT_ERROR = 1;
 const EXIT_SPLITS_AVAILABLE = 2;
@@ -78,6 +80,7 @@ function dirtyFiles(cwd: string, files: string[]): string[] | undefined {
 const main = defineCommand({
   meta: {
     name: "auto-server-split",
+    version: typeof __VERSION__ === "string" ? __VERSION__ : "0.0.0-dev",
     description:
       'Split partly-interactive "use client" components into a Server Component plus small client islands.',
   },

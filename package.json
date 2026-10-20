@@ -43,7 +43,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "node e2e/run.mjs",
-    "pretest": "tsup --silent"
+    "pretest": "tsup --silent",
+    "prepublishOnly": "pnpm lint && pnpm typecheck && pnpm test"
   },
   "dependencies": {
     "citty": "0.2.2",
