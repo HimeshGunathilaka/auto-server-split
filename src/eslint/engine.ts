@@ -3,7 +3,7 @@ import path from "node:path";
 import type { Outcome } from "../analysis/skip.js";
 import { findConfigFile, loadConfigFileSync, resolveConfig } from "../config/config.js";
 import { BundleMeasurer } from "../measure/bundleSize.js";
-import { ensureLoaded } from "../project/loadProject.js";
+import { ensureLoaded, setSourceText } from "../project/loadProject.js";
 import type { Analyzed, RunContext } from "../split.js";
 import { analyzeFile, checkAnalyzed, createRunContext, measureAnalyzed } from "../split.js";
 import type { UserConfig } from "../types.js";
@@ -99,7 +99,7 @@ export function analyzeForLint(args: {
   const sf = run.loaded.project.getSourceFile(file);
   if (!sf) return undefined;
   // Analyse what the editor/CLI is linting, not what's on disk.
-  if (sf.getFullText() !== args.text) sf.replaceWithText(args.text);
+  if (sf.getFullText() !== args.text) setSourceText(sf, args.text);
 
   const analyzed = analyzeFile(run, file);
   if (!analyzed.ok) return analyzed;

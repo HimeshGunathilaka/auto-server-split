@@ -33,6 +33,25 @@ export function detectStyle(sf: ts.SourceFile): CodeStyle {
   return { quote, semi, indent };
 }
 
+/** The file's line ending, from its first line break (as Prettier's `endOfLine: "auto"` decides). */
+export function lineEndingOf(text: string): "\r\n" | "\n" {
+  const i = text.indexOf("\n");
+  return i > 0 && text[i - 1] === "\r" ? "\r\n" : "\n";
+}
+
+/** True if `text` uses both CRLF and bare LF line breaks. */
+export function hasMixedLineEndings(text: string): boolean {
+  return text.includes("\r\n") && /(?:^|[^\r])\n/.test(text);
+}
+
+/**
+ * Converts every line break to `eol`. Safe for code: template literals and line continuations
+ * read CRLF and LF the same, and JSX text treats both as a line break.
+ */
+export function withLineEnding(text: string, eol: "\r\n" | "\n"): string {
+  return text.replace(/\r?\n/g, eol);
+}
+
 export function lineStartOf(text: string, pos: number): number {
   const i = text.lastIndexOf("\n", pos - 1);
   return i === -1 ? 0 : i + 1;

@@ -31,6 +31,10 @@ All notable changes to this project are documented here. The project follows [Se
 - Untyped linting builds the program the way TypeScript does: a file the tsconfig's `include`
   doesn't match but that an included file imports (for example a `.jsx` component with `allowJs`)
   is analysed, as the CLI already did.
+- Files saved with Windows line endings (CRLF) keep them: inserted lines and the island file use
+  the original's line ending. They used to come out LF, and an interactive rename turned the whole
+  rewritten file LF (ts-morph's `replaceWithText` rewrites line breaks; the self-check now sets
+  file text byte for byte).
 - Repository housekeeping: author and license holder set to Himesh Gunathilake; fixtures moved to
   `test/fixtures/`; `CONTRIBUTING.md`, `.editorconfig`, `.nvmrc`; `format`/`format:check` scripts
   (checked in CI); `noUnusedLocals`/`noUnusedParameters`; unused exports and dead helpers removed.

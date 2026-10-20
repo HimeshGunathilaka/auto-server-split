@@ -27,6 +27,7 @@ import { buildModuleGraph } from "./project/moduleGraph.js";
 import { PackageClassifier } from "./project/packages.js";
 import { emitSplit } from "./transform/emit.js";
 import { formatWithProjectPrettier } from "./transform/format.js";
+import { hasMixedLineEndings, lineEndingOf, withLineEnding } from "./transform/text.js";
 import type { FileResult, IslandInfo, ResolvedConfig, SplitOptions, SplitResult } from "./types.js";
 import { selfCheck } from "./verify/selfCheck.js";
 
@@ -431,6 +432,13 @@ export function analyzeFile(
         : spec,
   });
   if (!emitted.ok) return emitted;
+  // Generated and inserted lines use the original file's line ending. A file that already mixes
+  // CRLF and LF keeps its existing lines byte for byte.
+  const eol = lineEndingOf(sf.text);
+  const serverText = hasMixedLineEndings(sf.text)
+    ? emitted.value.serverText
+    : withLineEnding(emitted.value.serverText, eol);
+  const islandText = withLineEnding(emitted.value.islandText, eol);
 
   const movedInfo: IslandInfo[] = [...wholesale].map((c) => ({
     name: c.name,
@@ -457,8 +465,8 @@ export function analyzeFile(
     file,
     islandFile,
     islandSpecifier,
-    serverText: emitted.value.serverText,
-    islandText: emitted.value.islandText,
+    serverText,
+    islandText,
     islands,
     staticRatio,
     importers: importerCheck.value.importers,

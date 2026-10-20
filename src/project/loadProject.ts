@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 import fg from "fast-glob";
+import type { SourceFile } from "ts-morph";
 import { Project, ts } from "ts-morph";
 
 const IGNORED_DIRS = [
@@ -100,6 +101,14 @@ export function loadProject(root: string, options: LoadOptions = {}): LoadedProj
   for (const file of files) project.addSourceFileAtPath(file);
   project.resolveSourceFileDependencies();
   return { project, root, configFile: undefined, compilerOptions: project.getCompilerOptions() };
+}
+
+/**
+ * Sets a source file's text byte for byte. ts-morph's `replaceWithText` rewrites every line break
+ * as LF, which would turn a CRLF original into an LF one for the rest of the run.
+ */
+export function setSourceText(sf: SourceFile, text: string): void {
+  sf.applyTextChanges([{ span: { start: 0, length: sf.getFullText().length }, newText: text }]);
 }
 
 /** In a lazy project, loads the given files (and whatever they import) before analysis. */

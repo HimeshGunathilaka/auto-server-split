@@ -10,6 +10,7 @@ import type { Outcome } from "../analysis/skip.js";
 import { ok, skip } from "../analysis/skip.js";
 import { FileFacts } from "../analysis/taint.js";
 import type { LoadedProject } from "../project/loadProject.js";
+import { setSourceText } from "../project/loadProject.js";
 import type { ModuleGraph } from "../project/moduleGraph.js";
 import type { PackageClassifier } from "../project/packages.js";
 
@@ -77,7 +78,7 @@ export function selfCheck(input: SelfCheckInput): Outcome<void> {
 
   let islandWrapper: ReturnType<typeof project.createSourceFile> | undefined;
   try {
-    original.replaceWithText(input.serverText);
+    setSourceText(original, input.serverText);
     islandWrapper = project.createSourceFile(islandFile, input.islandText, { overwrite: false });
     const program = project.getProgram().compilerObject;
     const checker = program.getTypeChecker();
@@ -233,7 +234,7 @@ export function selfCheck(input: SelfCheckInput): Outcome<void> {
 
     return ok(undefined);
   } finally {
-    original.replaceWithText(originalText);
+    setSourceText(original, originalText);
     if (islandWrapper) project.removeSourceFile(islandWrapper);
   }
 }

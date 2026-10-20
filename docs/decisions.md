@@ -334,6 +334,26 @@ the result carries `measureError` ("saving not measured" in the CLI). `--no-meas
 explicit opt-out. The measurer uses esbuild's synchronous API (no slower in practice) so the CLI
 and the ESLint rule share it.
 
+### Line endings follow the original file
+
+The analysis reads CRLF and LF files the same way (every fixture gives the same result on a CRLF
+copy), but the emitter writes `\n`. After emitting, the island file is converted to the original's
+line ending, taken from its first line break (the rule Prettier's `endOfLine: "auto"` uses), and so
+is the rewritten file when the original uses one ending throughout, which changes only the lines
+the tool inserted. A file that already mixes CRLF and LF is left as it is rather than normalised,
+since rewriting lines the split didn't touch would break the "untouched bytes stay" rule. This is
+safe for code: template literals and line continuations read CRLF and LF the same way, and JSX
+text treats both as a line break. When the project's Prettier formats the output, its `endOfLine`
+decides, as it would for `prettier --write`.
+
+ts-morph's `replaceWithText` rewrites every line break as LF, so the self-check, which swaps the
+generated text in and back out, used to leave an LF copy of a CRLF original in memory; anything that
+re-analysed the file later (interactive renames, the ESLint rule's next lint) saw LF.
+`setSourceText` replaces the whole text with `applyTextChanges`, which keeps it byte for byte.
+
+`test/line-endings.test.ts` reruns every fixture on CRLF input and requires the expected output
+with CRLF line endings, byte for byte.
+
 ### The ESLint rule applies the CLI's config and thresholds
 
 The rule's job is to point at splits the CLI will perform, so it can't use a different config or
