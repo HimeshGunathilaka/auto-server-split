@@ -20,6 +20,9 @@ All notable changes to this project are documented here. The project follows [Se
   hook names moved into the framework adapter so `analysis/` stays framework-neutral; packaging
   verified by installing the packed tarball into a fresh Next.js 16 app (CLI, API, types, ESLint
   plugin, `.ts` config) and running the CLI on Node 20.
+- Repository housekeeping: author and license holder set to Himesh Gunathilake; fixtures moved to
+  `test/fixtures/`; `CONTRIBUTING.md`, `.editorconfig`, `.nvmrc`; `format`/`format:check` scripts
+  (checked in CI); `noUnusedLocals`/`noUnusedParameters`; unused exports and dead helpers removed.
 
 ## 0.5.0 — ESLint plugin
 

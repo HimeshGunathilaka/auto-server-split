@@ -71,11 +71,10 @@ export const nextAdapter: FrameworkAdapter = {
   ],
 };
 
-export const NEXT_ROUTE_FILE_BASENAMES = ["page", "route"];
-export const DEFAULT_PAGE_EXTENSIONS = ["tsx", "ts", "jsx", "js"];
+const NEXT_ROUTE_FILE_BASENAMES = ["page", "route"];
+const DEFAULT_PAGE_EXTENSIONS = ["tsx", "ts", "jsx", "js"];
 
-export type PageExtensionsResult =
-  { ok: true; extensions: string[] } | { ok: false; reason: string };
+type PageExtensionsResult = { ok: true; extensions: string[] } | { ok: false; reason: string };
 
 /**
  * Reads `pageExtensions` from next.config.* without executing it. If the config mentions

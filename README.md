@@ -77,18 +77,18 @@ npx auto-server-split <paths...> [--dry-run | --write | --check] [--interactive]
                                  [--config <file>] [--root <dir>] [--allow-dirty] [--verbose] [--no-measure]
 ```
 
-| Flag | What it does |
-|---|---|
-| *(default)* `--dry-run` | Prints a coloured unified diff per file, the islands and the estimated KB saved. Skipped files show their reason. Nothing is written. |
-| `--write` | Applies the changes. Refuses if any target file has uncommitted changes, is untracked or is git-ignored (or the project isn't a git repository), unless you pass `--allow-dirty`. |
-| `--check` | For CI: exits `2` if any split is available. Changes nothing. |
-| `--interactive` | Walks through each proposed split: `[y]es / [n]o / [r]ename islands / [d]iff / [q]uit`, then writes the accepted ones (same git checks as `--write`). Renames go back through the engine and its self-check. Needs a terminal; can't be combined with `--json` or `--check`. |
-| `--json` | Machine-readable report with the same shape as the API result. |
-| `--config <file>` | Config file (default: `auto-split.config.{ts,mts,mjs,js,json}` in the project root). |
-| `--root <dir>` | Project root, where `tsconfig.json` lives (default: the current directory). |
-| `--no-measure` | Skips the esbuild size measurement (faster; `minBytesSaved` isn't applied). |
-| `--verbose` | Prints stack traces for internal errors. |
-| `--help`, `--version` | Usage and version. |
+| Flag                    | What it does                                                                                                                                                                                                                                                                 |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| _(default)_ `--dry-run` | Prints a coloured unified diff per file, the islands and the estimated KB saved. Skipped files show their reason. Nothing is written.                                                                                                                                        |
+| `--write`               | Applies the changes. Refuses if any target file has uncommitted changes, is untracked or is git-ignored (or the project isn't a git repository), unless you pass `--allow-dirty`.                                                                                            |
+| `--check`               | For CI: exits `2` if any split is available. Changes nothing.                                                                                                                                                                                                                |
+| `--interactive`         | Walks through each proposed split: `[y]es / [n]o / [r]ename islands / [d]iff / [q]uit`, then writes the accepted ones (same git checks as `--write`). Renames go back through the engine and its self-check. Needs a terminal; can't be combined with `--json` or `--check`. |
+| `--json`                | Machine-readable report with the same shape as the API result.                                                                                                                                                                                                               |
+| `--config <file>`       | Config file (default: `auto-split.config.{ts,mts,mjs,js,json}` in the project root).                                                                                                                                                                                         |
+| `--root <dir>`          | Project root, where `tsconfig.json` lives (default: the current directory).                                                                                                                                                                                                  |
+| `--no-measure`          | Skips the esbuild size measurement (faster; `minBytesSaved` isn't applied).                                                                                                                                                                                                  |
+| `--verbose`             | Prints stack traces for internal errors.                                                                                                                                                                                                                                     |
+| `--help`, `--version`   | Usage and version.                                                                                                                                                                                                                                                           |
 
 Without paths, the config's `include` globs are used (`app/**`, `components/**`, `src/**`).
 Exit codes: `0` ok, `1` internal error or bad input, `2` splits available (with `--check`).
@@ -104,10 +104,10 @@ again picks these up.
 import { split } from "auto-server-split";
 
 const result = await split({
-  root: process.cwd(),        // project root (where tsconfig.json lives)
+  root: process.cwd(), // project root (where tsconfig.json lives)
   paths: ["app", "components"],
   write: false,
-  config: {},                 // overrides the config file
+  config: {}, // overrides the config file
 });
 
 for (const file of result.files) {
@@ -122,7 +122,7 @@ See [docs/api.md](docs/api.md) for the full result type.
 ```js
 // eslint.config.js
 import autoSplit from "auto-server-split/eslint";
-export default [/* your TypeScript/JSX parser config */, autoSplit.configs.recommended];
+export default [, /* your TypeScript/JSX parser config */ autoSplit.configs.recommended];
 ```
 
 The rule `auto-server-split/prefer-server-split` reports on the `"use client"` directive:
@@ -143,11 +143,11 @@ export default defineConfig({
   include: ["app/**", "components/**", "src/**"],
   exclude: ["**/*.test.*", "**/*.stories.*"],
   clientOnlyPackages: ["my-ui-lib/interactive"], // added to the built-in list
-  serverSafeHooks: [],                           // e.g. ["useTranslations"]
-  clientFileSuffix: ".client",                   // or islandsDir: "_islands"
-  minBytesSaved: 2048,                           // gzip bytes, conservative estimate
+  serverSafeHooks: [], // e.g. ["useTranslations"]
+  clientFileSuffix: ".client", // or islandsDir: "_islands"
+  minBytesSaved: 2048, // gzip bytes, conservative estimate
   minStaticRatio: 0.3,
-  prettier: "auto",                              // format touched files with the project's Prettier config
+  prettier: "auto", // format touched files with the project's Prettier config
   mongoose: { autoSerialize: false },
 });
 ```
@@ -159,26 +159,26 @@ Unknown keys are an error. See [docs/configuration.md](docs/configuration.md).
 Every skip has a stable code, a one-sentence message and, where possible, a source location.
 [docs/skip-reasons.md](docs/skip-reasons.md) has an example and a fix for each.
 
-| Code | When |
-|---|---|
-| `imported-by-client` | A client module imports the file (directly or through a barrel) |
-| `exports-non-components` | The file exports hooks, utilities or values |
-| `state-spans-component` | Client state is used across the whole returned element |
-| `context-provider` | The file creates or provides a Context |
-| `css-in-js-runtime` | styled-components, Emotion, styled-jsx… |
-| `non-serializable-prop` | A value crossing the boundary isn't serializable |
-| `untyped-boundary` | `.js`/`.jsx` file and the prop types can't be proven |
-| `spread-props` | A spread that can't be proven serializable |
-| `conditional-hooks-or-returns` | Conditional hooks, or early returns that depend on client state |
-| `class-component` | The file contains a class component |
-| `dynamic-import` / `render-prop` / `hoc` | `next/dynamic`/`lazy`/`import()`, render props, `memo`/`forwardRef` |
-| `server-env-difference` | Reads a non-`NEXT_PUBLIC_` env var |
-| `no-islands` / `fully-interactive` | No client code at all (the directive may be unnecessary), or nothing would stay on the server |
-| `below-threshold` | Below `minBytesSaved` or `minStaticRatio` |
-| `output-exists` / `would-create-route` | File-system conflicts |
-| `unsupported-pattern` | Valid code this version doesn't handle (the message says which) |
-| `self-check-failed` | The generated code failed the self-check |
-| `parse-error` / `internal-error` | Bugs: reported per file, never crash the run |
+| Code                                     | When                                                                                          |
+| ---------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `imported-by-client`                     | A client module imports the file (directly or through a barrel)                               |
+| `exports-non-components`                 | The file exports hooks, utilities or values                                                   |
+| `state-spans-component`                  | Client state is used across the whole returned element                                        |
+| `context-provider`                       | The file creates or provides a Context                                                        |
+| `css-in-js-runtime`                      | styled-components, Emotion, styled-jsx…                                                       |
+| `non-serializable-prop`                  | A value crossing the boundary isn't serializable                                              |
+| `untyped-boundary`                       | `.js`/`.jsx` file and the prop types can't be proven                                          |
+| `spread-props`                           | A spread that can't be proven serializable                                                    |
+| `conditional-hooks-or-returns`           | Conditional hooks, or early returns that depend on client state                               |
+| `class-component`                        | The file contains a class component                                                           |
+| `dynamic-import` / `render-prop` / `hoc` | `next/dynamic`/`lazy`/`import()`, render props, `memo`/`forwardRef`                           |
+| `server-env-difference`                  | Reads a non-`NEXT_PUBLIC_` env var                                                            |
+| `no-islands` / `fully-interactive`       | No client code at all (the directive may be unnecessary), or nothing would stay on the server |
+| `below-threshold`                        | Below `minBytesSaved` or `minStaticRatio`                                                     |
+| `output-exists` / `would-create-route`   | File-system conflicts                                                                         |
+| `unsupported-pattern`                    | Valid code this version doesn't handle (the message says which)                               |
+| `self-check-failed`                      | The generated code failed the self-check                                                      |
+| `parse-error` / `internal-error`         | Bugs: reported per file, never crash the run                                                  |
 
 ## How it decides
 
@@ -194,25 +194,17 @@ Every skip has a stable code, a one-sentence message and, where possible, a sour
 ## Limitations
 
 - **It's conservative.** On three well-known open-source apps, most `"use client"` files are skipped, because they are already genuinely interactive ([docs/benchmarks.md](docs/benchmarks.md)). The tool pays off in codebases that put `"use client"` high in the tree.
-- **Server vs browser rendering differences** that the tool can't see stay a risk: for example, timezone- or locale-dependent formatting moves from the browser to the server (`format(new Date(x), "PPP")` in the example above). Nondeterministic calls it *can* see (`Date.now()`, `Math.random()`, `new Date()`) are kept on the client.
+- **Server vs browser rendering differences** that the tool can't see stay a risk: for example, timezone- or locale-dependent formatting moves from the browser to the server (`format(new Date(x), "PPP")` in the example above). Nondeterministic calls it _can_ see (`Date.now()`, `Math.random()`, `new Date()`) are kept on the client.
 - **Safety of local modules is decided per module, not per export**, so one client-only helper in a utility module keeps every caller of that module on the client.
 - Third-party React packages are client-only unless they have a `"use client"` entry or are on the small built-in server-safe list. Unknown packages stay in islands.
-- Not handled in v1 (they skip): class components, `memo`/`forwardRef`, render props, `next/dynamic`, Context providers, runtime CSS-in-JS, statements other than declarations/hook calls/early returns in a component body, and existing `X.client.tsx` files (it never merges).
+- Not handled yet (they skip): class components, `memo`/`forwardRef`, render props, `next/dynamic`, Context providers, runtime CSS-in-JS, statements other than declarations/hook calls/early returns in a component body, and existing `X.client.tsx` files (it never merges).
 - The ESLint rule reads only `auto-split.config.json` (rules are synchronous) and caches the module graph per lint process.
 - Next.js only for now; framework specifics live in `src/frameworks/next.ts`.
 
-## Development
+## Contributing
 
-```bash
-pnpm install
-pnpm test          # build + unit + fixture tests
-pnpm test:e2e      # next build before/after on e2e/apps/*, DOM equality, Playwright
-node scripts/perf.mjs 500            # dry run on a synthetic 500-file app
-node scripts/benchmark.mjs --build   # real apps, writes docs/benchmarks.md
-```
-
-Fixtures live in `fixtures/NN-name/` (`input/` plus `output/` or `expected-skip.json`). `UPDATE_FIXTURES=1 pnpm test` regenerates outputs; review those diffs by hand.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the project layout, tests and release checklist.
 
 ## License
 
-MIT
+[MIT](LICENSE) © Himesh Gunathilake

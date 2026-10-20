@@ -3,10 +3,7 @@ import type { Readable, Writable } from "node:stream";
 import pc from "picocolors";
 import type { FileResult } from "./types.js";
 
-export type Rerun = (
-  relFile: string,
-  renames: Readonly<Record<string, string>>,
-) => Promise<FileResult>;
+type Rerun = (relFile: string, renames: Readonly<Record<string, string>>) => Promise<FileResult>;
 
 type Io = {
   input: Readable;

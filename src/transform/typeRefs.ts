@@ -3,7 +3,7 @@ import type { ModuleDecl } from "../analysis/components.js";
 import type { ImportBinding, ImportTable } from "../analysis/importTable.js";
 import { containsRange } from "../analysis/refs.js";
 
-export type TypeDeps = {
+type TypeDeps = {
   /** Import bindings needed only as types. */
   imports: Set<ImportBinding>;
   /** Module-level declarations of this file needed by the island (types, or values used via typeof). */
@@ -12,7 +12,7 @@ export type TypeDeps = {
   synthetic: Map<string, Set<string>>;
 };
 
-export type TypeRefFailure = { message: string; node?: ts.Node };
+type TypeRefFailure = { message: string; node?: ts.Node };
 
 /** Leftmost identifiers of every type reference under `node`. */
 function typeReferenceHeads(node: ts.Node): ts.Identifier[] {

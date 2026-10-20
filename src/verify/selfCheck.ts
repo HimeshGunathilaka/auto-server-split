@@ -13,7 +13,7 @@ import type { LoadedProject } from "../project/loadProject.js";
 import type { ModuleGraph } from "../project/moduleGraph.js";
 import type { PackageClassifier } from "../project/packages.js";
 
-export type SelfCheckInput = {
+type SelfCheckInput = {
   loaded: LoadedProject;
   graph: ModuleGraph;
   framework: FrameworkAdapter;
@@ -53,7 +53,7 @@ function merge(into: Map<DiagKey, number>, from: Map<DiagKey, number>): void {
 }
 
 /**
- * Re-verifies the generated code in memory before anything is reported or written (spec 5.7):
+ * Re-verifies the generated code in memory before anything is reported or written:
  * both files parse, typechecking finds no new diagnostics, the rewritten file has no client-only
  * code left, every island prop is serializable, and the island file has no server-only imports.
  */

@@ -1,23 +1,24 @@
 # Decisions
 
-Places where the implementation departs from, or fills a gap in, the build spec. Newest milestone last.
+Places where the implementation departs from, or fills a gap in, the original design spec
+([spec.md](spec.md)). Newest milestone last.
 
 ## 0.0 — scaffold
 
 ### Toolchain versions (looked up 2026-10-19)
 
-| Package | Version | Note |
-|---|---|---|
-| next | 16.4.2 | used by e2e apps and fixture types |
-| react / react-dom | 19.3.1 | |
-| typescript | **6.0.3** (dev) | See below. `latest` on npm is 7.0.2 |
-| ts-morph | 28.0.0 | bundles TypeScript 6.0.2 |
-| esbuild | 0.28.2 | |
-| eslint | 10.13.0 | |
-| typescript-eslint | 8.71.2 | supports `typescript >=4.8.4 <6.1.0` |
-| prettier | 3.9.10 | optional peer |
-| vitest | 5.0.5 | |
-| tsup | 9.0.0 | |
+| Package           | Version         | Note                                 |
+| ----------------- | --------------- | ------------------------------------ |
+| next              | 16.4.2          | used by e2e apps and fixture types   |
+| react / react-dom | 19.3.1          |                                      |
+| typescript        | **6.0.3** (dev) | See below. `latest` on npm is 7.0.2  |
+| ts-morph          | 28.0.0          | bundles TypeScript 6.0.2             |
+| esbuild           | 0.28.2          |                                      |
+| eslint            | 10.13.0         |                                      |
+| typescript-eslint | 8.71.2          | supports `typescript >=4.8.4 <6.1.0` |
+| prettier          | 3.9.10          | optional peer                        |
+| vitest            | 5.0.5           |                                      |
+| tsup              | 9.0.0           |                                      |
 
 ### TypeScript 6, not 7
 
@@ -25,7 +26,7 @@ TypeScript 7 (the Go-native compiler) is the current `latest`, but its JavaScrip
 under `typescript/unstable/*`, and neither ts-morph (bundles TS 6.0.2) nor typescript-eslint (`<6.1.0`)
 supports it. The analysis engine uses the TypeScript that ts-morph bundles, so it does not need the
 user's `typescript` at all. TS 6 and TS 7 accept the same language, so analysing a TS 7 project with the
-TS 6 checker is sound. `typescript` stays an *optional* peer dependency (`>=5.4`): it's only used when
+TS 6 checker is sound. `typescript` stays an _optional_ peer dependency (`>=5.4`): it's only used when
 the ESLint rule runs with typed linting.
 
 ### Node versions: runtime >= 20, toolchain >= 22
@@ -33,6 +34,7 @@ the ESLint rule runs with typed linting.
 The package declares `engines.node >= 20` and is built with `target: node20`. Vitest 5 and tsup 9
 themselves require Node >= 22 (and Node 20 reached end-of-life in April 2026), so the spec's "CI on
 Node 20 and 22" is implemented as:
+
 - full lint/typecheck/test/build on Node 22 and 24;
 - a Node 20 job that builds on 22, then runs the built CLI on Node 20 (`e2e/smoke.mjs`).
 
@@ -54,8 +56,8 @@ Rather than overload an unrelated code, these use `unsupported-pattern` with a s
 
 ### Unknown means client
 
-Moving code *into* an island preserves behaviour (it was client code before). Only moving code
-*to the server* is risky. So everything the analysis can't prove server-safe is treated as
+Moving code _into_ an island preserves behaviour (it was client code before). Only moving code
+_to the server_ is risky. So everything the analysis can't prove server-safe is treated as
 client-only and ends up inside an island:
 
 - packages that depend on React, have no `"use client"` entry, and aren't on the built-in
@@ -74,6 +76,7 @@ server file as client references when every prop is serializable; otherwise they
 ### Extra client-only markers
 
 Besides the spec's list:
+
 - **Render nondeterminism:** `Date.now()`, `new Date()` with no arguments, `Math.random()`,
   `performance.now()`, `crypto.randomUUID()`/`getRandomValues()`. A client component re-renders
   these in the browser after hydration; a Server Component wouldn't, so the visible output could
@@ -169,7 +172,7 @@ because the helper's code lives at module level in the island file, not inside t
 
 ### Server Action props
 
-A component prop with a function type normally can't cross the boundary. It's allowed when *every*
+A component prop with a function type normally can't cross the boundary. It's allowed when _every_
 importer's JSX usage passes a Server Action for that prop: an export of a `"use server"` module, or
 a function whose body starts with `"use server"`. If any usage spreads props (`{...props}`), no prop
 qualifies. The self-check applies the same rule.
@@ -213,12 +216,13 @@ code is evaluated on the server, so its values don't become island props.
 ### Multiple components per file
 
 Every component in the file is planned; together they share one island file.
+
 - A component with no client-only code stays as it is (it becomes a Server Component).
 - A **non-exported** helper component that is entirely interactive (`fully-interactive` or
   `state-spans-component` on its own) moves **wholesale** into the island file, exported from
   there, and is imported back. Other components render it as a client reference, so its props
   must be serializable (otherwise the usage becomes part of an island). Planning repeats until
-  the set of moved components is stable. An *exported* component that is entirely interactive
+  the set of moved components is stable. An _exported_ component that is entirely interactive
   still skips the whole file: moving it would change what importers get.
 - A server-safe component of the file that an island renders (e.g. a small `Avatar`) is **copied**
   into the island file (its original code, without `export`), and removed from the server file if

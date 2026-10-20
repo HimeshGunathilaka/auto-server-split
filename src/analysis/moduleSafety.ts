@@ -4,7 +4,7 @@ import type { FrameworkAdapter } from "./framework.js";
 import { buildImportTable } from "./importTable.js";
 import { FileFacts, findEnvProblem } from "./taint.js";
 
-export type SafetyResult = { safe: boolean; reason?: string };
+type SafetyResult = { safe: boolean; reason?: string };
 
 /**
  * Decides whether a project module without a directive can be evaluated and used inside a Server

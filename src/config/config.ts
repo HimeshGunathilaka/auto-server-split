@@ -3,7 +3,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ResolvedConfig, UserConfig } from "../types.js";
 
-export const DEFAULT_CONFIG: ResolvedConfig = {
+const DEFAULT_CONFIG: ResolvedConfig = {
   include: ["app/**", "components/**", "src/**"],
   exclude: ["**/*.test.*", "**/*.spec.*", "**/*.stories.*"],
   clientOnlyPackages: [],
@@ -16,7 +16,7 @@ export const DEFAULT_CONFIG: ResolvedConfig = {
   mongoose: { autoSerialize: false },
 };
 
-export const CONFIG_FILES = [
+const CONFIG_FILES = [
   "auto-split.config.ts",
   "auto-split.config.mts",
   "auto-split.config.mjs",

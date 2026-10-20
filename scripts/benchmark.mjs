@@ -1,4 +1,4 @@
-// Benchmark (spec milestone 1.0): dry-run auto-server-split on real open-source Next.js App Router
+// Benchmark: dry-run auto-server-split on real open-source Next.js App Router
 // apps, record split/skip rates and estimated KB saved, and (with --build) check that the apps still
 // build after `--write`. Results are written to docs/benchmarks.md.
 //

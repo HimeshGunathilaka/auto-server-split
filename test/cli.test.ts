@@ -5,7 +5,7 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 const repo = path.resolve(import.meta.dirname, "..");
 const cli = path.join(repo, "dist/cli.js");
-const fixture = path.join(repo, "fixtures/01-postcard-like-button/input");
+const fixture = path.join(repo, "test/fixtures/01-postcard-like-button/input");
 const tmpRoot = path.join(repo, "test/.tmp");
 let dir = "";
 

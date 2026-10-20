@@ -2,7 +2,7 @@ import { ts } from "ts-morph";
 
 export type Directive = "use client" | "use server";
 
-export type DirectiveInfo = {
+type DirectiveInfo = {
   directive: Directive | undefined;
   /** The directive statement itself, when present. */
   statement: ts.ExpressionStatement | undefined;

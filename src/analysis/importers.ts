@@ -32,7 +32,7 @@ function isJsxTagPosition(id: ts.Identifier): boolean {
 }
 
 /**
- * Spec 5.2: every module that imports the file (directly or through barrels) must be a server
+ * Every module that imports the file (directly or through barrels) must be a server
  * module, and must only render the components as JSX, so they can safely become Server Components.
  * Returns the importer files whose diagnostics the self-check should compare.
  */
@@ -145,7 +145,7 @@ export function checkImporters(
 }
 
 /** True if `expr` names a Server Action: an export of a "use server" module or a "use server" function. */
-export function isServerActionReference(expr: ts.Expression, checker: ts.TypeChecker): boolean {
+function isServerActionReference(expr: ts.Expression, checker: ts.TypeChecker): boolean {
   let e = expr;
   while (ts.isParenthesizedExpression(e)) e = e.expression;
   if (!ts.isIdentifier(e) && !ts.isPropertyAccessExpression(e)) return false;

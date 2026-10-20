@@ -79,7 +79,3 @@ export function skip(
 ): { ok: false; skip: Skip } {
   return { ok: false, skip: location ? { code, message, location } : { code, message } };
 }
-
-export function isSkipCode(value: unknown): value is SkipCode {
-  return typeof value === "string" && (SKIP_CODES as readonly string[]).includes(value);
-}

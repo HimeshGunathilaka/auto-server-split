@@ -1,4 +1,4 @@
-// Generates a synthetic 500-file Next.js app and times a dry run (spec section 9: < 15 s).
+// Generates a synthetic 500-file Next.js app and times a dry run (target: under 15 s).
 // Usage: pnpm build && node scripts/perf.mjs [fileCount]
 import { execFileSync } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";

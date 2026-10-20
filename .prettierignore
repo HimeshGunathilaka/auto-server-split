@@ -1,5 +1,7 @@
-fixtures
+test/fixtures
+test/eslint-project
 e2e/apps
 dist
 pnpm-lock.yaml
-BUILD_PROMPT.md
+docs/spec.md
+docs/benchmarks.md

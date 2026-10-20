@@ -10,7 +10,7 @@ const TMP = path.resolve(import.meta.dirname, ".tmp");
  * Writes `files` into a throwaway directory inside the repo (so react/next types resolve) and
  * runs split() on it. Thresholds default to 0 so small examples aren't skipped.
  */
-export async function splitSources(
+async function splitSources(
   files: Record<string, string>,
   config: UserConfig = {},
 ): Promise<FileResult[]> {

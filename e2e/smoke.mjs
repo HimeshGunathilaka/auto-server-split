@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 
 const root = path.resolve(import.meta.dirname, "..");
-const fixture = path.join(root, "fixtures/01-postcard-like-button/input");
+const fixture = path.join(root, "test/fixtures/01-postcard-like-button/input");
 if (!existsSync(fixture)) {
   console.log("smoke: no fixture yet, skipping");
   process.exit(0);

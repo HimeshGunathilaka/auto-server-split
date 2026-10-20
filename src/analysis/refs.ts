@@ -25,7 +25,7 @@ export function tagNameText(
  * name, intrinsic tag, closing tag or import/export specifier). Type positions are excluded by the
  * walkers, which never descend into type nodes.
  */
-export function isValueReference(id: ts.Identifier): boolean {
+function isValueReference(id: ts.Identifier): boolean {
   const parent = id.parent;
   if (!parent) return false;
   if (ts.isPropertyAccessExpression(parent) && parent.name === id) return false;
@@ -154,12 +154,6 @@ export function containsRange(
   inner: { pos: number; end: number },
 ): boolean {
   return inner.pos >= outer.pos && inner.end <= outer.end;
-}
-
-export function isFunctionLikeExpression(
-  node: ts.Node,
-): node is ts.ArrowFunction | ts.FunctionExpression {
-  return ts.isArrowFunction(node) || ts.isFunctionExpression(node);
 }
 
 /** The `.map(cb)` call whose first argument is `fn`, if any. */

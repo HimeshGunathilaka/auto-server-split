@@ -34,8 +34,12 @@ exports components and types. Hooks, utilities, constants, classes, enums and re
 
 ```tsx
 "use client";
-export function useLike() { /* ... */ }   // ← exports useLike, which is not a component
-export default function PostCard() { /* ... */ }
+export function useLike() {
+  /* ... */
+} // ← exports useLike, which is not a component
+export default function PostCard() {
+  /* ... */
+}
 ```
 
 **To fix:** move hooks and helpers into their own module (`hooks/useLike.ts`).
@@ -48,8 +52,10 @@ returned element, or it's read by non-JSX code in the return expression.
 ```tsx
 const [open, setOpen] = useState(false);
 return (
-  <div className={open ? "open" : ""}>         {/* the root reads `open`… */}
-    <button onClick={() => setOpen(!open)} />  {/* …and so does a deep child */}
+  <div className={open ? "open" : ""}>
+    {" "}
+    {/* the root reads `open`… */}
+    <button onClick={() => setOpen(!open)} /> {/* …and so does a deep child */}
   </div>
 );
 ```
@@ -68,7 +74,7 @@ from a Server Component.
 ## `css-in-js-runtime`
 
 The file uses styled-components, Emotion, Stitches, goober, styled-jsx (`<style jsx>`) or another
-runtime CSS-in-JS library. These need client rendering; v1 always skips them.
+runtime CSS-in-JS library. These need client rendering, so they are always skipped.
 
 **To fix:** use CSS Modules, Tailwind or another zero-runtime styling approach.
 
@@ -78,8 +84,18 @@ A value that would cross the boundary as an island prop isn't serializable (func
 Server Actions, class instances, symbols, `any`/`unknown`, ...). The message names the prop and its type.
 
 ```tsx
-export default function ItemRow({ item, onSelect }: { item: Item; onSelect: (id: string) => void }) {
-  return <li>…<button onClick={() => onSelect(item.id)}>Select</button></li>;
+export default function ItemRow({
+  item,
+  onSelect,
+}: {
+  item: Item;
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <li>
+      …<button onClick={() => onSelect(item.id)}>Select</button>
+    </li>
+  );
   // ← `onSelect` (type `(id: string) => void`) would be passed to a Client Component, but it is a function
 }
 ```
@@ -128,7 +144,7 @@ The file contains a class component (`extends React.Component`).
 
 The file uses `next/dynamic`, `React.lazy` or `import()`, or another module loads it with `import()`.
 
-**To fix:** v1 doesn't split these. Import the component statically if you can.
+**To fix:** this version doesn't split these. Import the component statically if you can.
 
 ## `render-prop`
 
@@ -156,12 +172,12 @@ Component on purpose and pass what the client needs as a prop.
 ## `no-islands`
 
 The file has no client-only code at all. The `"use client"` directive may simply be unnecessary.
-v1 never removes it automatically; check that nothing imports the file expecting a client
+The tool never removes it automatically; check that nothing imports the file expecting a client
 component, then remove it yourself.
 
 ## `fully-interactive`
 
-The interactive part *is* the whole returned element (for example the component returns a single
+The interactive part _is_ the whole returned element (for example the component returns a single
 `<button onClick>`), so nothing would stay on the server. In a file with several components, a
 non-exported helper like this is moved whole into the island file instead; the code is used only
 when an exported component (or every component) is entirely interactive.
@@ -177,7 +193,7 @@ less than `minStaticRatio` of the JSX on the server (default 0.3).
 
 ## `output-exists` / `would-create-route`
 
-`X.client.tsx` already exists (v1 never merges into an existing file), or the generated file could
+`X.client.tsx` already exists (the tool never merges into an existing file), or the generated file could
 be picked up as a Next.js route (anything under `pages/`, an app-router `page`/`route` file for one
 of the configured `pageExtensions`, or a `next.config` whose `pageExtensions` can't be read statically).
 

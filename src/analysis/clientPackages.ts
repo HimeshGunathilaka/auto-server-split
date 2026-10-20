@@ -99,7 +99,7 @@ export const BUILTIN_CLIENT_ONLY_PACKAGES = [
   "react-ga4",
 ];
 
-/** Runtime CSS-in-JS libraries. A file that uses one is always skipped in v1. */
+/** Runtime CSS-in-JS libraries. A file that uses one is always skipped. */
 export const CSS_IN_JS_PACKAGES = [
   "styled-components",
   "@emotion/react",

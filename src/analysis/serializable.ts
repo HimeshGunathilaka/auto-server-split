@@ -1,6 +1,6 @@
 import { ts } from "ts-morph";
 
-export type Verdict = { ok: true } | { ok: false; reason: string };
+type Verdict = { ok: true } | { ok: false; reason: string };
 
 const OK: Verdict = { ok: true };
 const fail = (reason: string): Verdict => ({ ok: false, reason });
@@ -45,7 +45,7 @@ const REACT_NODE_TYPES = new Set([
   "JSXElementConstructor",
 ]);
 
-export type SerializableOptions = {
+type SerializableOptions = {
   /** Untyped (.js/.jsx) files: only primitives can be proven. */
   primitivesOnly?: boolean;
 };
@@ -154,7 +154,6 @@ export function checkSerializable(
     const aliasSymbol = t.aliasSymbol;
     const name = symbol?.getName();
 
-    // React elements / nodes (JSX).
     if (
       (aliasSymbol &&
         REACT_NODE_TYPES.has(aliasSymbol.getName()) &&

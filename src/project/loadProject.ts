@@ -3,7 +3,7 @@ import path from "node:path";
 import fg from "fast-glob";
 import { Project, ts } from "ts-morph";
 
-export const IGNORED_DIRS = [
+const IGNORED_DIRS = [
   "node_modules",
   ".next",
   ".git",
@@ -29,7 +29,7 @@ export type LoadedProject = {
   lazyFileNames?: string[];
 };
 
-export type LoadOptions = {
+type LoadOptions = {
   /** Explicit tsconfig/jsconfig path (default: the one in `root`). */
   tsconfig?: string;
   lazy?: boolean;

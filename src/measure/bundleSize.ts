@@ -6,7 +6,7 @@ import { build } from "esbuild";
 import { packageNameOf } from "../analysis/clientPackages.js";
 import type { ModuleGraph } from "../project/moduleGraph.js";
 
-export type BytesSaved = { isolated: number; conservative: number };
+type BytesSaved = { isolated: number; conservative: number };
 
 type BundleStats = { gzip: number; minified: number; inputs: Map<string, number> };
 
@@ -35,7 +35,7 @@ const EMPTY_LOADERS = [
 ];
 
 /**
- * Estimates the client JavaScript saved by a split (spec 5.8): bundle the original client file and
+ * Estimates the client JavaScript saved by a split: bundle the original client file and
  * the generated island file with esbuild (react, react-dom and next external), and compare gzip sizes.
  */
 export class BundleMeasurer {

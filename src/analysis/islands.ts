@@ -50,7 +50,7 @@ export type JNode = {
   depth: number;
 };
 
-export type Origin =
+type Origin =
   | { kind: "param"; symbol: ts.Symbol }
   | { kind: "local"; symbol: ts.Symbol; unit: Unit }
   | { kind: "inner"; symbol: ts.Symbol; declaration: ts.Declaration }
@@ -169,7 +169,7 @@ export function islandBaseName(componentName: string, rootTag: string): string {
  * Plans the split of one component: which JSX subtrees become islands, which statements move with
  * them, and which values cross the boundary as props.
  */
-export type PlanOptions = {
+type PlanOptions = {
   /** Component props that every importer passes a Server Action for (see checkImporters). */
   serverActionProps?: ReadonlySet<string>;
   /** Other components of the file that move wholesale into the island file (client references). */
@@ -752,7 +752,7 @@ export function planComponent(
     if (clientUnits.length === 0 && clientModuleDecls.size === 0) {
       return skip(
         "no-islands",
-        `${component.name} uses no client-only features; removing "use client" may be enough (not done automatically in v1)`,
+        `${component.name} uses no client-only features; removing "use client" may be enough (the tool never removes it automatically)`,
       );
     }
     const first = clientUnits[0];
@@ -919,7 +919,6 @@ export function planComponent(
     const attached = attachUnreadClientUnits();
     if (!attached.ok) return attached;
     let changed = attached.value;
-    // Nesting.
     outer: for (const a of groups) {
       for (const b of groups) {
         if (a === b) continue;
@@ -1275,7 +1274,6 @@ export function planComponent(
       if (failure) return { ok: false, skip: failure };
     }
 
-    // Serializability of every prop.
     for (const prop of props.values()) {
       if (serverActionParams.has(prop.symbol)) continue; // a Server Action reference crosses as-is
       const verdict = checkSerializable(checker, prop.type, { primitivesOnly: ctx.isJs });

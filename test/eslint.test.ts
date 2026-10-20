@@ -10,7 +10,7 @@ RuleTester.describe = describe;
 RuleTester.it = it;
 RuleTester.itOnly = it.only;
 
-const projectDir = path.resolve(import.meta.dirname, "eslint/project");
+const projectDir = path.resolve(import.meta.dirname, "eslint-project");
 const file = (rel: string) => path.join(projectDir, rel);
 const code = (rel: string) => readFileSync(file(rel), "utf8");
 const rule = plugin.rules["prefer-server-split"];
@@ -35,7 +35,7 @@ const cases = {
       errors: [
         {
           message:
-            "PostCard is 80% static with 1 interactive island (<button>). Run: npx auto-server-split test/eslint/project/components/PostCard.tsx --write",
+            "PostCard is 80% static with 1 interactive island (<button>). Run: npx auto-server-split test/eslint-project/components/PostCard.tsx --write",
           line: 1,
         },
       ],

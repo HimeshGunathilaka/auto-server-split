@@ -5,7 +5,7 @@ import { classifyImportUsage } from "./importTable.js";
 import { HOOK_NAME_RE, calleeName, forEachValueRef, symbolOfRef } from "./refs.js";
 
 /** Globals that only exist (or only make sense) in the browser. */
-export const BROWSER_GLOBALS = new Set([
+const BROWSER_GLOBALS = new Set([
   "window",
   "document",
   "localStorage",
@@ -83,7 +83,7 @@ export type Marker = {
   special?: UsageClass["special"];
 };
 
-export type RefInfo =
+type RefInfo =
   | { kind: "import"; binding: ImportBinding; usage: UsageClass }
   | { kind: "browser-global"; name: string }
   | { kind: "global" }
@@ -236,7 +236,7 @@ function nondeterministicCall(n: ts.Node): string | undefined {
   return undefined;
 }
 
-export type EnvProblem = { node: ts.Node; message: string };
+type EnvProblem = { node: ts.Node; message: string };
 
 /**
  * Finds reads of environment values that differ between the server and the browser bundle:

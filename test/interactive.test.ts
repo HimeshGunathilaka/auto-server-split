@@ -5,7 +5,7 @@ import { reviewInteractively } from "../src/interactive.js";
 import { runSplit } from "../src/split.js";
 
 async function review(answers: string[]) {
-  const root = path.resolve(import.meta.dirname, "../fixtures/07-two-independent-islands/input");
+  const root = path.resolve(import.meta.dirname, "fixtures/07-two-independent-islands/input");
   const report = await runSplit({
     root,
     paths: ["."],

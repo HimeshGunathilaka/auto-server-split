@@ -173,7 +173,7 @@ function rel(root: string, file: string): string {
   return path.relative(root, file).split(path.sep).join("/");
 }
 
-export async function processFile(
+async function processFile(
   run: RunContext,
   file: string,
   renames: Readonly<Record<string, string>> = {},
@@ -296,7 +296,7 @@ export function analyzeFile(
   if (existsSync(islandFile) || loaded.project.getSourceFile(islandFile)) {
     return skip(
       "output-exists",
-      `${rel(root, islandFile)} already exists; v1 never merges into existing files`,
+      `${rel(root, islandFile)} already exists; existing files are never merged into`,
     );
   }
   if (!run.pageExtensions.ok) return skip("would-create-route", run.pageExtensions.reason);
@@ -380,7 +380,7 @@ export function analyzeFile(
   if (plans.length === 0 && wholesale.size === 0) {
     return skip(
       "no-islands",
-      `${components.map((c) => c.name).join(", ")} ${components.length === 1 ? "uses" : "use"} no client-only features; removing "use client" may be enough (not done automatically in v1)`,
+      `${components.map((c) => c.name).join(", ")} ${components.length === 1 ? "uses" : "use"} no client-only features; removing "use client" may be enough (the tool never removes it automatically)`,
     );
   }
   if (components.every((c) => wholesale.has(c) || c.exported === "none") && plans.length === 0) {
@@ -465,7 +465,7 @@ export function analyzeFile(
   });
 }
 
-/** Runs the self-check (spec 5.7) on an analysed file's output. Synchronous. */
+/** Runs the self-check on an analysed file's output. Synchronous. */
 export function checkAnalyzed(
   run: RunContext,
   analyzed: Analyzed,
@@ -536,7 +536,7 @@ function specialApiSkip(ctx: AnalysisContext, facts: FileFacts): Skip | undefine
       case "css-in-js":
         return {
           code: "css-in-js-runtime",
-          message: `uses ${marker.detail}; v1 always skips runtime CSS-in-JS`,
+          message: `uses ${marker.detail}; runtime CSS-in-JS is always skipped`,
           location: loc,
         };
       case "context":
@@ -554,14 +554,14 @@ function specialApiSkip(ctx: AnalysisContext, facts: FileFacts): Skip | undefine
       case "hoc":
         return {
           code: "hoc",
-          message: `uses ${marker.detail}, which v1 doesn't split`,
+          message: `uses ${marker.detail}, which this version doesn't split`,
           location: loc,
         };
       case "lazy":
       case "dynamic":
         return {
           code: "dynamic-import",
-          message: `uses ${marker.detail}, which v1 doesn't split`,
+          message: `uses ${marker.detail}, which this version doesn't split`,
           location: loc,
         };
       default:
@@ -579,7 +579,7 @@ function specialApiSkip(ctx: AnalysisContext, facts: FileFacts): Skip | undefine
   if (dynamicImport)
     return {
       code: "dynamic-import",
-      message: "uses import(), which v1 doesn't split",
+      message: "uses import(), which this version doesn't split",
       location: locOf(ctx, dynamicImport),
     };
   return undefined;
@@ -609,7 +609,7 @@ function countJsx(node: ts.Node): number {
   return n;
 }
 
-export function relativeSpecifier(fromDir: string, toFile: string, keepExtension = false): string {
+function relativeSpecifier(fromDir: string, toFile: string, keepExtension = false): string {
   let target = path.relative(fromDir, toFile).split(path.sep).join("/");
   if (!keepExtension) target = target.replace(/\.(tsx|ts|jsx|js|mts|mjs)$/, "");
   return target.startsWith(".") ? target : `./${target}`;

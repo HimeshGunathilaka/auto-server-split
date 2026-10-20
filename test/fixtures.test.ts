@@ -13,14 +13,14 @@ import { split } from "../src/index.js";
 import type { UserConfig } from "../src/types.js";
 
 /**
- * Walks every folder under fixtures/. Each has `input/` and either `output/` (the exact set of
+ * Walks every folder under test/fixtures/. Each has `input/` and either `output/` (the exact set of
  * touched/created files) or `expected-skip.json` ({ file, code, messageIncludes? }).
  * An optional `fixture.json` holds { config?, measure? }.
  *
  * UPDATE_FIXTURES=1 rewrites `output/` from the current result. Review those diffs by hand.
  */
 
-const FIXTURES_DIR = path.resolve(import.meta.dirname, "../fixtures");
+const FIXTURES_DIR = path.resolve(import.meta.dirname, "fixtures");
 const UPDATE = process.env.UPDATE_FIXTURES === "1";
 
 type FixtureMeta = { config?: UserConfig; measure?: boolean; only?: string[] };

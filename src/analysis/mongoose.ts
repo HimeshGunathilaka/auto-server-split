@@ -2,7 +2,7 @@ import { ts } from "ts-morph";
 import { checkSerializable } from "./serializable.js";
 
 /**
- * Mongoose / BSON support (spec 5.5, opt-in with `mongoose.autoSerialize`). A prop whose type is a
+ * Mongoose / BSON support (opt-in with `mongoose.autoSerialize`). A prop whose type is a
  * Mongoose document or contains an ObjectId isn't serializable, but the island usually reads only a
  * few fields. We pass exactly those fields as a plain object built on the server, converting
  * ObjectIds with String() and keeping Dates as they are.
@@ -15,7 +15,7 @@ function declaredInMongoPackage(symbol: ts.Symbol | undefined): boolean {
   return (symbol?.declarations ?? []).some((d) => MONGO_TYPES_RE.test(d.getSourceFile().fileName));
 }
 
-export function isObjectIdType(type: ts.Type): boolean {
+function isObjectIdType(type: ts.Type): boolean {
   const symbol = type.getSymbol() ?? type.aliasSymbol;
   return symbol?.getName() === "ObjectId" && declaredInMongoPackage(symbol);
 }
@@ -54,17 +54,13 @@ export type PickedProp = {
   typeText: string;
 };
 
-export type PickResult = { ok: true; value: PickedProp } | { ok: false; reason: string };
+type PickResult = { ok: true; value: PickedProp } | { ok: false; reason: string };
 
-function stripNullish(
-  checker: ts.TypeChecker,
-  type: ts.Type,
-): { type: ts.Type; nullable: boolean } {
+function stripNullish(type: ts.Type): { type: ts.Type; nullable: boolean } {
   if (!type.isUnion()) return { type, nullable: false };
   const rest = type.types.filter((t) => !(t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)));
   if (rest.length === type.types.length || rest.length !== 1 || !rest[0])
     return { type, nullable: false };
-  void checker;
   return { type: rest[0], nullable: true };
 }
 
@@ -92,7 +88,7 @@ export function pickMongooseFields(
       path.push(parent.name.text);
       node = parent;
       const type = checker.getTypeAtLocation(node);
-      const { type: inner } = stripNullish(checker, type);
+      const { type: inner } = stripNullish(type);
       if (isObjectIdType(inner) || checkSerializable(checker, type).ok) {
         leafType = type;
         break;
@@ -110,7 +106,7 @@ export function pickMongooseFields(
         reason: `reads \`${name}.${path.join(".")}\`, which isn't serializable even after picking fields`,
       };
     }
-    const { type: inner, nullable } = stripNullish(checker, leafType);
+    const { type: inner, nullable } = stripNullish(leafType);
     const objectId = isObjectIdType(inner);
     if (objectId) {
       const after = node.parent;
@@ -125,7 +121,6 @@ export function pickMongooseFields(
         };
       }
     }
-    // Record the path in the tree.
     let branch = root;
     for (const [i, key] of path.entries()) {
       const last = i === path.length - 1;

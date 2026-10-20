@@ -1,4 +1,4 @@
-// End-to-end check (spec section 7). For every app under e2e/apps:
+// End-to-end check. For every app under e2e/apps:
 //   1. copy it twice into e2e/.tmp (inside the repo, so next/react resolve from the root node_modules)
 //   2. `next build` the untouched copy ("before")
 //   3. run the codemod with --write on the other copy, check the expected splits/skips, `next build` it ("after")

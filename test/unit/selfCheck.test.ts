@@ -8,7 +8,7 @@ import { buildModuleGraph } from "../../src/project/moduleGraph.js";
 import { PackageClassifier } from "../../src/project/packages.js";
 import { selfCheck } from "../../src/verify/selfCheck.js";
 
-const fixture = path.resolve(import.meta.dirname, "../../fixtures/01-postcard-like-button");
+const fixture = path.resolve(import.meta.dirname, "../fixtures/01-postcard-like-button");
 const file = path.join(fixture, "input/PostCard.tsx");
 const islandFile = path.join(fixture, "input/PostCard.client.tsx");
 const goodServer = readFileSync(path.join(fixture, "output/PostCard.tsx"), "utf8");

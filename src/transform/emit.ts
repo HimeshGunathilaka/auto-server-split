@@ -27,7 +27,7 @@ import {
 } from "./text.js";
 import { TypeRefCollector } from "./typeRefs.js";
 
-export type EmitInput = {
+type EmitInput = {
   ctx: AnalysisContext;
   shape: FileShape;
   imports: ImportTable;
@@ -44,7 +44,7 @@ export type EmitInput = {
   renames?: Readonly<Record<string, string>>;
 };
 
-export type EmitOutput = { serverText: string; islandText: string; islands: IslandPlan[] };
+type EmitOutput = { serverText: string; islandText: string; islands: IslandPlan[] };
 
 type Range = { start: number; end: number };
 

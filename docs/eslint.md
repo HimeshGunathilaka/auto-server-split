@@ -21,10 +21,10 @@ PostCard is 80% static with 1 interactive island (<button>). Run: npx auto-serve
 
 Options:
 
-| Option | Default | Meaning |
-|---|---|---|
-| `minStaticRatio` | `0.5` | Report only when at least this share of the JSX would stay on the server. |
-| `selfCheck` | `true` | Run the in-memory self-check before reporting (turn off for speed). |
+| Option           | Default | Meaning                                                                   |
+| ---------------- | ------- | ------------------------------------------------------------------------- |
+| `minStaticRatio` | `0.5`   | Report only when at least this share of the JSX would stay on the server. |
+| `selfCheck`      | `true`  | Run the in-memory self-check before reporting (turn off for speed).       |
 
 **No autofix.** ESLint fixes can only edit the linted file, and a split creates a new one. Run the
 CLI to apply the split.

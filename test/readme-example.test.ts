@@ -2,7 +2,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { split } from "../src/index.js";
 
-// The exact expected output from section 2 of the build spec, kept inline so regenerating
+// The exact expected output from the README example, kept inline so regenerating
 // fixtures (UPDATE_FIXTURES=1) can never silently change it.
 const SERVER = `import { format } from "date-fns";
 import { marked } from "marked";
@@ -31,9 +31,9 @@ export function PostCardButton() {
 }
 `;
 
-describe("spec section 2: PostCard like button", () => {
+describe("README example: PostCard like button", () => {
   it("produces exactly the specified output, with the size measured", async () => {
-    const root = path.resolve(import.meta.dirname, "../fixtures/01-postcard-like-button/input");
+    const root = path.resolve(import.meta.dirname, "fixtures/01-postcard-like-button/input");
     const result = await split({ root, paths: ["PostCard.tsx"] });
     const file = result.files.find((f) => f.file === "PostCard.tsx");
     expect(file?.skipped).toBeUndefined();

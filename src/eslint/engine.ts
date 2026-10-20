@@ -7,7 +7,7 @@ import type { Analyzed, RunContext } from "../split.js";
 import { analyzeFile, checkAnalyzed, createRunContext } from "../split.js";
 import type { UserConfig } from "../types.js";
 
-export type LintOptions = {
+type LintOptions = {
   minStaticRatio?: number;
   /** Run the in-memory self-check before reporting (default true). */
   selfCheck?: boolean;
@@ -16,7 +16,7 @@ export type LintOptions = {
 /** One cached run per tsconfig and mode, for the lifetime of the lint process. */
 const runs = new Map<string, RunContext>();
 
-export function findTsconfig(file: string): string | undefined {
+function findTsconfig(file: string): string | undefined {
   let dir = path.dirname(file);
   for (;;) {
     for (const name of ["tsconfig.json", "jsconfig.json"]) {

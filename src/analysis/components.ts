@@ -57,7 +57,7 @@ function hasDefaultModifier(node: ts.Node): boolean {
 }
 
 /** True if the function returns JSX (directly, not from a nested function). */
-export function returnsJsx(fn: ComponentFunction): boolean {
+function returnsJsx(fn: ComponentFunction): boolean {
   if (!fn.body) return false;
   if (!ts.isBlock(fn.body)) return containsJsx(fn.body);
   let found = false;
@@ -82,8 +82,8 @@ function hocCallName(expr: ts.Expression, sf: ts.SourceFile): string | undefined
 }
 
 /**
- * Splits the module into components and other declarations, enforcing the candidate rules from
- * spec 5.2: only components and types are exported, and nothing runs at module level that would
+ * Splits the module into components and other declarations, enforcing the candidate rules:
+ * only components and types are exported, and nothing runs at module level that would
  * behave differently on the server.
  */
 export function analyzeFileShape(ctx: AnalysisContext, facts: FileFacts): Outcome<FileShape> {
@@ -177,7 +177,7 @@ export function analyzeFileShape(ctx: AnalysisContext, facts: FileFacts): Outcom
           if (hoc && /(^|\.)(memo|forwardRef)$/.test(hoc)) {
             return skip(
               "hoc",
-              `${name} is wrapped in ${hoc}(), which v1 doesn't split`,
+              `${name} is wrapped in ${hoc}(), which this version doesn't split`,
               locOf(ctx, decl),
             );
           }
@@ -261,7 +261,7 @@ export function analyzeFileShape(ctx: AnalysisContext, facts: FileFacts): Outcom
       if (hoc)
         return skip(
           "hoc",
-          `the default export is wrapped in ${hoc}(), which v1 doesn't split`,
+          `the default export is wrapped in ${hoc}(), which this version doesn't split`,
           locOf(ctx, statement),
         );
       return skip(
