@@ -46,12 +46,57 @@ type FileResult = {
 };
 ```
 
+`bytesSaved.isolated` is the gzip size of the original file's bundle minus the island's.
+`bytesSaved.conservative` also leaves out code that other client modules still import, because the
+browser downloads it anyway. Thresholds and the CLI summary use `conservative`.
+
 With measuring on, every split has `bytesSaved`, except when esbuild can't bundle the file: then
 the file is skipped as `measure-failed`, or, with `minBytesSaved: 0`, split with `measureError` set.
+
+`npx auto-server-split --json` prints the same `{ files }` object. One split and one skip
+(`diff` and `outputs` shortened):
+
+```json
+{
+  "files": [
+    {
+      "file": "components/ArticleFooter.tsx",
+      "status": "split",
+      "islands": [{ "name": "ArticleFooterButton", "rootTag": "button", "props": [], "line": 11 }],
+      "staticRatio": 0.8333333333333334,
+      "bytesSaved": { "isolated": 83, "conservative": 83 },
+      "diff": "===…\n--- a/components/ArticleFooter.tsx\n+++ b/components/ArticleFooter.tsx\n…",
+      "outputs": {
+        "components/ArticleFooter.tsx": "import { ArticleFooterButton } from \"./ArticleFooter.client\";\n…",
+        "components/ArticleFooter.client.tsx": "\"use client\";\n\nexport function ArticleFooterButton() {…"
+      }
+    },
+    {
+      "file": "components/Banner.tsx",
+      "status": "skipped",
+      "islands": [],
+      "staticRatio": 0,
+      "diff": "",
+      "outputs": {},
+      "skipped": {
+        "code": "state-spans-component",
+        "message": "client state is used across the whole returned tree (<div>, <small>)",
+        "location": { "line": 6, "column": 5 }
+      }
+    }
+  ]
+}
+```
 
 Only files that start with `"use client"` appear in `files`, and each is either `"split"` or
 `"skipped"`; `"unchanged"` is part of the type but isn't produced by this version. Unexpected errors are reported per file
 as `internal-error` and never reject the promise. Invalid configuration rejects with a `ConfigError`.
+
+## `SKIP_CODES` and `SKIP_TITLES`
+
+`SKIP_CODES` is the list of every `SkipCode`. `SKIP_TITLES` maps each code to the short title the
+CLI summary prints (for example `state-spans-component` → "client state spans the whole
+component"). [skip-reasons.md](skip-reasons.md) explains each code.
 
 ## `defineConfig(config: UserConfig): UserConfig`
 

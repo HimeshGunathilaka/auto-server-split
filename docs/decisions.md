@@ -92,7 +92,7 @@ A component-local declaration that an island needs but that isn't serializable (
 function, a class instance) is **copied** into the island instead of failing the split. It's
 removed from the server component when nothing there reads it any more. Module-level helper
 functions and non-serializable module constants are copied into the island file the same way.
-Serializable module constants become props, as the spec says. The copied code ran in the browser
+Serializable module constants become props. The copied code ran in the browser
 before, so this keeps the original behaviour. Component props (parameters) and `.map` callback
 variables are never copied; if they aren't serializable the file is skipped.
 
@@ -139,7 +139,7 @@ Positions move during a split, so "no new diagnostics" is checked as a multiset 
 `(code, message)` over the original file plus the island file, and separately per importer file.
 The check mutates the shared ts-morph project in memory and always restores it (`finally`).
 
-### Size measurement landed early (spec 5.8)
+### Size measurement landed early
 
 `minBytesSaved` defaults to 2048, so the measurement had to exist for any default-config split to
 be meaningful. It ships in 0.1 rather than 0.2. If esbuild can't bundle a file on its own,
@@ -258,7 +258,7 @@ is mostly markup.
 
 ## 0.5 — ESLint plugin
 
-### No autofix (as specified)
+### No autofix
 
 An ESLint fix can only edit the file being linted, and a split has to create a new file
 (`X.client.tsx`). Faking it (writing files from inside a rule, or a suggestion that leaves the

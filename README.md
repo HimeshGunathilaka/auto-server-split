@@ -70,6 +70,60 @@ npm install --save-dev auto-server-split     # or pnpm add -D / yarn add -D
 npx auto-server-split --help
 ```
 
+## Recommended workflow
+
+1. **Start from a clean git state.** `--write` refuses to touch files with uncommitted changes, so commit or stash first. Every change the tool makes then shows up as one reviewable diff.
+2. **Preview.** Start with one folder rather than the whole app:
+
+   ```bash
+   npx auto-server-split components
+   ```
+
+   Nothing is written. The output looks like this (abridged, colours removed):
+
+   ```
+   ✔ split components/ArticleFooter.tsx · 1 island · 83% static · ~83 B gzip saved (estimated)
+       ArticleFooterButton <button>
+   ===================================================================
+   --- a/components/ArticleFooter.tsx
+   +++ b/components/ArticleFooter.tsx
+   @@ -1,4 +1,4 @@
+   -"use client";
+   +import { ArticleFooterButton } from "./ArticleFooter.client";
+   …
+   – skipped components/Badge.tsx [imported-by-client] imported by components/ClientPanel.tsx (client)
+   – skipped components/Banner.tsx:6:5 [state-spans-component] client state is used across the whole returned tree (<div>, <small>)
+
+   Summary
+     files scanned:  27 (21 with "use client")
+     files split:    16 (dry run, nothing written)
+     files skipped:  5
+         1  imported-by-client             imported by a client module
+         1  state-spans-component          client state spans the whole component
+         …
+     estimated saving: 727 B gzip of client JavaScript (1 split not measured)
+
+   Run again with --write to apply.
+   ```
+
+3. **Apply.** Use `--write` to apply every split, or `--interactive` to accept, reject or rename them one at a time.
+4. **Review before you commit.**
+   - Read the diff: the rewritten `X.tsx` files and the new `X.client.tsx` files.
+   - Run your build, type checker and tests.
+   - Click through the affected pages, especially the interactive parts.
+   - Look for timezone- or locale-dependent output (dates, numbers, `toLocaleString`). That code now runs on the server, which may use a different timezone or locale from your users' browsers.
+5. **Run it again.** Splitting a file can make another file splittable: a component that was only imported by a client component becomes splittable once that importer turns into a Server Component. Repeat until the summary shows no new splits.
+6. **Look at the skips.** Some point to a small refactor that makes the file splittable (for example `exports-non-components` or `context-provider`). Others, such as `fully-interactive`, mean the component belongs on the client. [docs/skip-reasons.md](docs/skip-reasons.md) has a fix for each.
+7. **Keep it from regressing** with the [ESLint rule](#eslint) in the editor and [`--check` in CI](#ci).
+
+**Island names** are the component name followed by the island's root element in PascalCase: `PostCard` + `<button>` gives `PostCardButton`, and `<motion.div>` gives `PostCardMotionDiv`. When that name is already taken (by another island or a name in the file), a number is added (`ToolbarButton2`). Rename them with `[r]ename` in `--interactive` mode, or edit the generated file afterwards: it's ordinary source code, and the tool never writes into an existing `X.client.tsx`.
+
+**To undo a split** before committing, restore the original file and delete the generated one:
+
+```bash
+git restore components/PostCard.tsx && rm components/PostCard.client.tsx
+```
+
 ## CLI
 
 ```bash
@@ -82,6 +136,7 @@ npx auto-server-split <paths...> [--dry-run | --write | --check] [--interactive]
 | _(default)_ `--dry-run` | Prints a coloured unified diff per file, the islands and the estimated KB saved. Skipped files show their reason. Nothing is written.                                                                                                                                                     |
 | `--write`               | Applies the changes. Refuses if any target file has uncommitted changes, is untracked or is git-ignored (or the project isn't a git repository), unless you pass `--allow-dirty`.                                                                                                         |
 | `--check`               | For CI: exits `2` if any split is available. Changes nothing.                                                                                                                                                                                                                             |
+| `--allow-dirty`         | Lets `--write` and `--interactive` write files that have uncommitted changes, are untracked or git-ignored, or are outside a git repository.                                                                                                                                              |
 | `--interactive`         | Walks through each proposed split: `[y]es / [n]o / [r]ename islands / [d]iff / [q]uit`, then writes the accepted ones (same git checks as `--write`). Renames go back through the engine and its self-check. Needs a terminal; can't be combined with `--dry-run`, `--json` or `--check`. |
 | `--json`                | Machine-readable report with the same shape as the API result.                                                                                                                                                                                                                            |
 | `--config <file>`       | Config file (default: `auto-split.config.{ts,mts,mjs,js,json}` in the project root).                                                                                                                                                                                                      |
@@ -92,11 +147,19 @@ npx auto-server-split <paths...> [--dry-run | --write | --check] [--interactive]
 
 Without paths, the config's `include` globs are used (`app/**`, `components/**`, `src/**`).
 Exit codes: `0` ok, `1` internal error or bad input, `2` splits available (with `--check`).
-The summary lists files scanned, files split, files skipped grouped by reason, and the total estimated saving.
+The summary lists files scanned, files split, files skipped grouped by reason, and the total estimated saving
+(see the sample output under [Recommended workflow](#recommended-workflow)).
 
-Splitting a file can make another file splittable: a component that was only imported by a client
-component becomes splittable once that importer turns into a Server Component. Running the tool
-again picks these up.
+### CI
+
+`--check` exits `2` when a split is available, which fails the step:
+
+```yaml
+# .github/workflows/ci.yml (excerpt)
+- run: npx auto-server-split --check
+```
+
+To report splits without failing the build, add `continue-on-error: true` to the step. The output lists each available split and its estimated saving either way.
 
 ## API
 
@@ -121,8 +184,13 @@ See [docs/api.md](docs/api.md) for the full result type.
 
 ```js
 // eslint.config.js
+import tseslint from "typescript-eslint";
 import autoSplit from "auto-server-split/eslint";
-export default [, /* your TypeScript/JSX parser config */ autoSplit.configs.recommended];
+
+export default [
+  ...tseslint.configs.recommended, // or any config that parses TypeScript/JSX
+  autoSplit.configs.recommended,
+];
 ```
 
 The rule `auto-server-split/prefer-server-split` reports on the `"use client"` directive:

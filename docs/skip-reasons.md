@@ -51,11 +51,11 @@ returned element, or it's read by non-JSX code in the return expression.
 
 ```tsx
 const [open, setOpen] = useState(false);
+// The root reads `open` (className), and so does a child (onClick),
+// so the smallest island containing both is the whole <div>.
 return (
   <div className={open ? "open" : ""}>
-    {" "}
-    {/* the root reads `open`… */}
-    <button onClick={() => setOpen(!open)} /> {/* …and so does a deep child */}
+    <button onClick={() => setOpen(!open)} />
   </div>
 );
 ```
