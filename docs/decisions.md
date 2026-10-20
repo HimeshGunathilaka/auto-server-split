@@ -1,7 +1,7 @@
 # Decisions
 
-Places where the implementation departs from, or fills a gap in, the original design spec
-([spec.md](spec.md)). Newest milestone last.
+Design decisions and the reasoning behind them, grouped by the release that introduced them.
+Oldest first.
 
 ## 0.0 — scaffold
 
@@ -32,8 +32,8 @@ the ESLint rule runs with typed linting.
 ### Node versions: runtime >= 20, toolchain >= 22
 
 The package declares `engines.node >= 20` and is built with `target: node20`. Vitest 5 and tsup 9
-themselves require Node >= 22 (and Node 20 reached end-of-life in April 2026), so the spec's "CI on
-Node 20 and 22" is implemented as:
+themselves require Node >= 22 (and Node 20 reached end-of-life in April 2026), so CI is
+set up as:
 
 - full lint/typecheck/test/build on Node 22 and 24;
 - a Node 20 job that builds on 22, then runs the built CLI on Node 20 (`e2e/smoke.mjs`).
@@ -46,7 +46,7 @@ Analysis steps return `Outcome<T>` (`{ ok: true, value } | { ok: false, skip }`)
 
 ### Extra skip code: `unsupported-pattern`
 
-The spec's table has no code for "valid code this version doesn't handle yet" (for example a
+The other skip codes don't cover "valid code this version doesn't handle yet" (for example a
 standalone `useEffect` that no interactive element depends on, more than one component in a file
 before v0.4 (superseded: supported since 0.4), or statements in the component body other than
 declarations, hook calls and early returns).
@@ -75,7 +75,7 @@ server file as client references when every prop is serializable; otherwise they
 
 ### Extra client-only markers
 
-Besides the spec's list:
+Besides hooks, event props, the common browser globals and client-only packages:
 
 - **Render nondeterminism:** `Date.now()`, `new Date()` with no arguments, `Math.random()`,
   `performance.now()`, `crypto.randomUUID()`/`getRandomValues()`. A client component re-renders
@@ -84,8 +84,7 @@ Besides the spec's list:
 - More browser globals (`self`, `screen`, `innerWidth`, `getComputedStyle`, `setTimeout`, `Image`, ...).
   See `BROWSER_GLOBALS` in `src/analysis/taint.ts`.
 
-`format(new Date(post.date), "PPP")` from the spec's fixture still stays on the server, as the spec
-requires. Timezone/locale differences between server and browser are listed under limitations.
+`format(new Date(post.date), "PPP")` in the README example still stays on the server. Timezone/locale differences between server and browser are listed under limitations.
 
 ### Free variables that can't be props are copied, not refused
 
@@ -157,7 +156,7 @@ be meaningful. It ships in 0.1 rather than 0.2. If esbuild can't bundle a file o
 
 ### Loop islands never take component-level hooks
 
-The spec's loop rule makes the mapped element the island root, so the island renders once per
+The basic loop rule makes the mapped element the island root, so the island renders once per
 item. If that island needed a hook declared at component level (for example a `useState` shared by
 every item), each item would get its own copy of the state, which is a behaviour change. In that
 case the root climbs out to the element that contains the `.map`, and the state stays shared.

@@ -3,5 +3,4 @@ test/eslint-project
 e2e/apps
 dist
 pnpm-lock.yaml
-docs/spec.md
 docs/benchmarks.md
