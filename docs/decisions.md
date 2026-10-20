@@ -46,7 +46,8 @@ Analysis steps return `Outcome<T>` (`{ ok: true, value } | { ok: false, skip }`)
 
 The spec's table has no code for "valid code this version doesn't handle yet" (for example a
 standalone `useEffect` that no interactive element depends on, more than one component in a file
-before v0.4, or statements in the component body other than declarations, hook calls and early returns).
+before v0.4 (superseded: supported since 0.4), or statements in the component body other than
+declarations, hook calls and early returns).
 Rather than overload an unrelated code, these use `unsupported-pattern` with a specific message.
 
 ## 0.1 — first split
@@ -147,7 +148,7 @@ be meaningful. It ships in 0.1 rather than 0.2. If esbuild can't bundle a file o
 - `--write` refuses outside a git repository (it can't verify there are no uncommitted changes)
   unless `--allow-dirty` is passed.
 - Any `internal-error` makes the exit code `1`.
-- `--interactive` is accepted but reports "not available yet" until 1.0.
+- `--interactive` is accepted but reports "not available yet" until 1.0 (superseded: implemented in 1.0).
 
 ## 0.2 — grouping, loops, packages, size
 

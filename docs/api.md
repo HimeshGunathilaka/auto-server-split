@@ -39,7 +39,8 @@ type FileResult = {
 };
 ```
 
-Only files that start with `"use client"` appear in `files`. Unexpected errors are reported per file
+Only files that start with `"use client"` appear in `files`, and each is either `"split"` or
+`"skipped"`; `"unchanged"` is part of the type but isn't produced by this version. Unexpected errors are reported per file
 as `internal-error` and never reject the promise. Invalid configuration rejects with a `ConfigError`.
 
 ## `defineConfig(config: UserConfig): UserConfig`

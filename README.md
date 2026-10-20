@@ -63,7 +63,7 @@ In the e2e app that renders this component, the route ships **18.5 KB gzip less 
 
 ## Install
 
-Node.js 20 or later. The project's own TypeScript and Prettier are used when present.
+Node.js 20 or later. The analysis uses the TypeScript compiler that ships with the tool (via ts-morph), so it doesn't depend on your project's TypeScript version (tested with TypeScript 5 and 6 projects). Your project's own Prettier is used for formatting when it has a Prettier config.
 
 ```bash
 npm install --save-dev auto-server-split     # or pnpm add -D / yarn add -D
@@ -82,12 +82,13 @@ npx auto-server-split <paths...> [--dry-run | --write | --check] [--interactive]
 | *(default)* `--dry-run` | Prints a coloured unified diff per file, the islands and the estimated KB saved. Skipped files show their reason. Nothing is written. |
 | `--write` | Applies the changes. Refuses if any target file has uncommitted changes, is untracked or is git-ignored (or the project isn't a git repository), unless you pass `--allow-dirty`. |
 | `--check` | For CI: exits `2` if any split is available. Changes nothing. |
-| `--interactive` | Walks through each proposed split: `[y]es / [n]o / [r]ename islands / [d]iff / [q]uit`. Renames go back through the engine and its self-check. |
+| `--interactive` | Walks through each proposed split: `[y]es / [n]o / [r]ename islands / [d]iff / [q]uit`, then writes the accepted ones (same git checks as `--write`). Renames go back through the engine and its self-check. Needs a terminal; can't be combined with `--json` or `--check`. |
 | `--json` | Machine-readable report with the same shape as the API result. |
 | `--config <file>` | Config file (default: `auto-split.config.{ts,mts,mjs,js,json}` in the project root). |
 | `--root <dir>` | Project root, where `tsconfig.json` lives (default: the current directory). |
 | `--no-measure` | Skips the esbuild size measurement (faster; `minBytesSaved` isn't applied). |
 | `--verbose` | Prints stack traces for internal errors. |
+| `--help`, `--version` | Usage and version. |
 
 Without paths, the config's `include` globs are used (`app/**`, `components/**`, `src/**`).
 Exit codes: `0` ok, `1` internal error or bad input, `2` splits available (with `--check`).

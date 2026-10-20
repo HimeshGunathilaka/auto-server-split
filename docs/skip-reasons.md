@@ -19,6 +19,10 @@ removed, that module would pull a Server Component into the client bundle, which
 import PostCard from "./PostCard"; // ← PostCard is skipped: imported by components/Sidebar.tsx (client)
 ```
 
+The same code is used when an importer can't be verified: it's outside the TypeScript project
+(for example an `.mdx` file, or a `.js` file without `allowJs`), or (in the ESLint rule without typed
+linting) it couldn't be loaded.
+
 **To fix:** render `PostCard` from a Server Component instead, or pass it to the client component as
 `children` / a JSX prop (`<Sidebar card={<PostCard post={post} />} />`). If the importer is client only
 because of a barrel (`components/index.ts`), import the file directly.
@@ -79,6 +83,10 @@ export default function ItemRow({ item, onSelect }: { item: Item; onSelect: (id:
   // ← `onSelect` (type `(id: string) => void`) would be passed to a Client Component, but it is a function
 }
 ```
+
+A function-typed prop is allowed when every importer passes a Server Action for it. Mongoose
+documents and values containing `ObjectId`s can cross the boundary with `mongoose.autoSerialize: true`,
+as long as the island only reads individual fields (not the whole object).
 
 **To fix:** pass data instead of behaviour (an id or URL), make the function a Server Action
 (`"use server"`), or keep the component fully client-side.
@@ -154,7 +162,9 @@ component, then remove it yourself.
 ## `fully-interactive`
 
 The interactive part *is* the whole returned element (for example the component returns a single
-`<button onClick>`), so nothing would stay on the server.
+`<button onClick>`), so nothing would stay on the server. In a file with several components, a
+non-exported helper like this is moved whole into the island file instead; the code is used only
+when an exported component (or every component) is entirely interactive.
 
 **To fix:** nothing to do: this component belongs on the client.
 
@@ -177,12 +187,17 @@ of the configured `pageExtensions`, or a `next.config` whose `pageExtensions` ca
 
 Valid code that this version can't split safely yet. The message says which pattern, for example:
 
-- statements in the component body other than `const` declarations, hook calls and early returns;
-- a `useEffect` (or other client-only code) that no rendered element depends on;
-- more than one component in a file (supported from v0.4);
+- statements in the component body other than `const` declarations, function declarations, hook
+  calls and early returns;
+- a `useEffect` (or other client-only code) that uses no island's state, so there is no island to
+  carry it (effects that sync an island's state move with that island);
+- an exported component, in a file with several components, that is entirely interactive (the
+  message says which component; the whole file is skipped);
+- Next.js `error.tsx` / `global-error.tsx`, which must stay Client Components;
 - module-level `let`/`var`, side effects, or a side-effect import of a JS module;
 - the component used as a value (not as `<X />`) by an importer;
-- a prop type that can't be named in the generated file.
+- a prop type that can't be named in the generated file, or an interactive-mode rename that isn't a
+  valid, unused component name.
 
 ## `self-check-failed`
 

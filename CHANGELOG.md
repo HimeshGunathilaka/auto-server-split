@@ -6,8 +6,7 @@ All notable changes to this project are documented here. The project follows [Se
 
 - `--interactive`: `[y]es / [n]o / [r]ename islands / [d]iff / [q]uit`; renames re-run the engine
   and its self-check.
-- Config file loading (`.ts`/`.mts` via esbuild, `.mjs`/`.js`, `.json`) with validation of unknown
-  keys and values. `--json` report.
+- `--version` prints the package version.
 - `--write` refuses untracked and git-ignored targets as well as modified ones.
 - Effects that sync island state move with that island; shared-context hooks (`usePathname`…) are
   allowed in per-item list islands; `const X = () => <jsx/>` components are no longer mistaken for
@@ -17,6 +16,10 @@ All notable changes to this project are documented here. The project follows [Se
 - `scripts/benchmark.mjs` (three real App Router apps) and `scripts/perf.mjs` (500-file dry run in
   ~7 s).
 - CLI and interactive-mode tests; fixture 32 (`islandsDir`).
+- Release prep: `prepublishOnly` runs lint, typecheck and tests (which rebuild `dist/`); Next.js
+  hook names moved into the framework adapter so `analysis/` stays framework-neutral; packaging
+  verified by installing the packed tarball into a fresh Next.js 16 app (CLI, API, types, ESLint
+  plugin, `.ts` config) and running the CLI on Node 20.
 
 ## 0.5.0 — ESLint plugin
 
