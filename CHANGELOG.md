@@ -20,6 +20,17 @@ All notable changes to this project are documented here. The project follows [Se
   hook names moved into the framework adapter so `analysis/` stays framework-neutral; packaging
   verified by installing the packed tarball into a fresh Next.js 16 app (CLI, API, types, ESLint
   plugin, `.ts` config) and running the CLI on Node 20.
+- `--interactive` can't be combined with `--dry-run` (it used to write the accepted splits anyway).
+- New skip code `measure-failed`: when esbuild can't bundle a file, its saving is unknown, so it no
+  longer passes `minBytesSaved` silently. With `minBytesSaved: 0` the file is split and the result
+  has `measureError` ("saving not measured" in the CLI output and summary).
+- The ESLint rule now applies the CLI's config and thresholds: it loads every config format
+  (`.ts`, `.mts`, `.mjs`, `.js`, `.json`), its `minStaticRatio` can raise the config's but not
+  lower it, and it measures the saving and applies `minBytesSaved` (new option `measure`). It only
+  reports files the CLI would split.
+- Untyped linting builds the program the way TypeScript does: a file the tsconfig's `include`
+  doesn't match but that an included file imports (for example a `.jsx` component with `allowJs`)
+  is analysed, as the CLI already did.
 - Repository housekeeping: author and license holder set to Himesh Gunathilake; fixtures moved to
   `test/fixtures/`; `CONTRIBUTING.md`, `.editorconfig`, `.nvmrc`; `format`/`format:check` scripts
   (checked in CI); `noUnusedLocals`/`noUnusedParameters`; unused exports and dead helpers removed.

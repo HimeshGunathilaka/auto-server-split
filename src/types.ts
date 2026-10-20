@@ -20,6 +20,11 @@ export type FileResult = {
   staticRatio: number;
   /** Gzip bytes saved; `conservative` is the headline "estimated" number. */
   bytesSaved?: { isolated: number; conservative: number };
+  /**
+   * Why `bytesSaved` is missing although measurement was on (esbuild couldn't bundle a file). Only
+   * splits with `minBytesSaved: 0` get here; otherwise the file is skipped as `measure-failed`.
+   */
+  measureError?: string;
   /** Unified diff covering all touched/created files. */
   diff: string;
   /** Project-relative path -> new content, for every touched or created file. */

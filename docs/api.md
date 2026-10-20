@@ -40,10 +40,14 @@ type FileResult = {
   }>;
   staticRatio: number; // share of JSX nodes that stay on the server, 0..1
   bytesSaved?: { isolated: number; conservative: number }; // gzip bytes
+  measureError?: string; // why bytesSaved is missing although measuring was on (only with minBytesSaved: 0)
   diff: string; // unified diff for every touched/created file
   outputs: Record<string, string>; // relative path -> new content
 };
 ```
+
+With measuring on, every split has `bytesSaved`, except when esbuild can't bundle the file: then
+the file is skipped as `measure-failed`, or, with `minBytesSaved: 0`, split with `measureError` set.
 
 Only files that start with `"use client"` appear in `files`, and each is either `"split"` or
 `"skipped"`; `"unchanged"` is part of the type but isn't produced by this version. Unexpected errors are reported per file

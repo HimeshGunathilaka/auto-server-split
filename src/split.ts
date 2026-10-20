@@ -45,11 +45,15 @@ export type RunContext = {
   measurer: BundleMeasurer | undefined;
 };
 
-type Planned = {
+type Saving = {
+  bytesSaved?: { isolated: number; conservative: number };
+  measureError?: string;
+};
+
+type Planned = Saving & {
   outputs: Record<string, string>;
   islands: IslandInfo[];
   staticRatio: number;
-  bytesSaved?: { isolated: number; conservative: number };
   originalText: string;
 };
 
@@ -109,7 +113,7 @@ export async function runSplit(options: SplitOptions = {}): Promise<
     const { BundleMeasurer } = await import("./measure/bundleSize.js");
     run.measurer = new BundleMeasurer(root, run.graph, run.loaded.configFile);
   }
-  const { graph, measurer } = run;
+  const { graph } = run;
 
   const targets = selectTargets(root, options.paths, config);
   const files: FileResult[] = [];
@@ -131,7 +135,6 @@ export async function runSplit(options: SplitOptions = {}): Promise<
       }
     }
   }
-  await measurer?.dispose();
   return {
     files,
     filesScanned: targets.length,
@@ -211,6 +214,7 @@ async function processFile(
       islands: value.islands,
       staticRatio: value.staticRatio,
       ...(value.bytesSaved ? { bytesSaved: value.bytesSaved } : {}),
+      ...(value.measureError ? { measureError: value.measureError } : {}),
       diff,
       outputs: value.outputs,
     };
@@ -508,25 +512,51 @@ async function planFile(
 
   const checked = checkAnalyzed(run, a, serverText, islandText);
   if (!checked.ok) return checked;
-
-  let bytesSaved: Planned["bytesSaved"];
-  if (run.measurer) {
-    bytesSaved = await run.measurer.measure(file, a.originalText, a.islandFile, islandText);
-    if (bytesSaved && bytesSaved.conservative < config.minBytesSaved) {
-      return skip(
-        "below-threshold",
-        `saves an estimated ${formatBytes(bytesSaved.conservative)} gzip (minBytesSaved is ${formatBytes(config.minBytesSaved)})`,
-      );
-    }
-  }
+  const saving = measureAnalyzed(run, a, islandText);
+  if (!saving.ok) return saving;
 
   return ok({
     outputs: { [rel(root, file)]: serverText, [rel(root, a.islandFile)]: islandText },
     islands: a.islands,
     staticRatio: a.staticRatio,
-    ...(bytesSaved ? { bytesSaved } : {}),
+    ...saving.value,
     originalText: a.originalText,
   });
+}
+
+/**
+ * Measures the saving (when the run has a measurer) and applies `minBytesSaved`. A saving that
+ * can't be measured can't be shown to meet a non-zero threshold, so it skips. Synchronous.
+ */
+export function measureAnalyzed(
+  run: RunContext,
+  analyzed: Analyzed,
+  islandText = analyzed.islandText,
+): Outcome<Saving> {
+  const { measurer, config } = run;
+  if (!measurer) return ok({});
+  const measured = measurer.measure(
+    analyzed.file,
+    analyzed.originalText,
+    analyzed.islandFile,
+    islandText,
+  );
+  const threshold = formatBytes(config.minBytesSaved);
+  if ("error" in measured) {
+    if (config.minBytesSaved === 0) return ok({ measureError: measured.error });
+    return skip(
+      "measure-failed",
+      `the saving couldn't be measured (${measured.error}), so minBytesSaved (${threshold}) can't be checked; set minBytesSaved to 0 or pass --no-measure to split without an estimate`,
+    );
+  }
+  const { bytesSaved } = measured;
+  if (bytesSaved.conservative < config.minBytesSaved) {
+    return skip(
+      "below-threshold",
+      `saves an estimated ${formatBytes(bytesSaved.conservative)} gzip (minBytesSaved is ${threshold})`,
+    );
+  }
+  return ok({ bytesSaved });
 }
 
 function specialApiSkip(ctx: AnalysisContext, facts: FileFacts): Skip | undefined {

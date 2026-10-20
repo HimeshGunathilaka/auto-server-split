@@ -35,7 +35,9 @@ function describeSplit(file: FileResult): string {
   );
   const saved = file.bytesSaved
     ? ` · ~${formatBytes(file.bytesSaved.conservative)} gzip saved (estimated)`
-    : "";
+    : file.measureError
+      ? ` · ${pc.yellow("saving not measured")} (${file.measureError})`
+      : "";
   return `${pc.green("✔ split")} ${pc.bold(file.file)} · ${file.islands.length} island${file.islands.length === 1 ? "" : "s"} · ${Math.round(file.staticRatio * 100)}% static${saved}\n    ${islands.join("\n    ")}`;
 }
 
@@ -137,9 +139,12 @@ const main = defineCommand({
     const paths = positional.map(
       (p) => path.relative(root, realpathSync(path.resolve(cwd, p))) || ".",
     );
-    if (args.interactive && (args.json || args.check)) {
+    // --interactive writes the splits you accept, so it can't be a dry run.
+    if (args.interactive && (args["dry-run"] || args.json || args.check)) {
       console.error(
-        pc.red("auto-server-split: --interactive can't be combined with --json or --check"),
+        pc.red(
+          "auto-server-split: --interactive can't be combined with --dry-run, --json or --check",
+        ),
       );
       process.exitCode = EXIT_ERROR;
       return;
@@ -259,8 +264,12 @@ const main = defineCommand({
       for (const [code, count] of [...byCode].sort((a, b) => b[1] - a[1])) {
         log(`    ${String(count).padStart(3)}  ${code.padEnd(30)} ${pc.dim(SKIP_TITLES[code])}`);
       }
+      const unmeasured = splits.filter((f) => f.measureError).length;
+      const unmeasuredNote =
+        unmeasured > 0 ? ` (${unmeasured} split${unmeasured === 1 ? "" : "s"} not measured)` : "";
       if (report.files.some((f) => f.bytesSaved))
-        log(`  estimated saving: ${formatBytes(saved)} gzip of client JavaScript`);
+        log(`  estimated saving: ${formatBytes(saved)} gzip of client JavaScript${unmeasuredNote}`);
+      else if (unmeasured > 0) log(`  estimated saving: unknown${unmeasuredNote}`);
       if (!written && !args.check && splits.length > 0)
         log(pc.dim("\nRun again with --write to apply."));
     }

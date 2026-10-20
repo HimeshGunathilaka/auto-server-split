@@ -43,7 +43,8 @@ test/
   fixtures/NN-name/    input/ plus output/ (exact expected files) or expected-skip.json
   eslint-project/      a small project used by the ESLint rule tests
   unit/                unit tests
-  *.test.ts            fixture runner, CLI, interactive mode, ESLint rule
+  *.test.ts            fixture runner, CLI, interactive mode, config loading, size measurement,
+                       ESLint rule, and ESLint/CLI parity
 e2e/                   e2e harness and the Next.js apps it builds
 scripts/               perf and benchmark scripts
 docs/                  user docs, design decisions, benchmarks

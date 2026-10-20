@@ -1,14 +1,20 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
-import type { BuildOptions, Metafile } from "esbuild";
-import { build } from "esbuild";
+import type { BuildOptions, Message, Metafile } from "esbuild";
+import { buildSync } from "esbuild";
 import { packageNameOf } from "../analysis/clientPackages.js";
 import type { ModuleGraph } from "../project/moduleGraph.js";
 
 type BytesSaved = { isolated: number; conservative: number };
 
+/** The saving, or why it couldn't be measured (esbuild couldn't bundle one of the files). */
+export type Measurement = { bytesSaved: BytesSaved } | { error: string };
+
 type BundleStats = { gzip: number; minified: number; inputs: Map<string, number> };
+
+/** Bundles kept per run; an editor's ESLint process measures every edit, so this is bounded. */
+const CACHE_LIMIT = 500;
 
 const EMPTY_LOADERS = [
   ".css",
@@ -37,9 +43,10 @@ const EMPTY_LOADERS = [
 /**
  * Estimates the client JavaScript saved by a split: bundle the original client file and
  * the generated island file with esbuild (react, react-dom and next external), and compare gzip sizes.
+ * Synchronous, so the CLI and the ESLint rule (which can't await) share it.
  */
 export class BundleMeasurer {
-  private readonly cache = new Map<string, BundleStats | undefined>();
+  private readonly cache = new Map<string, BundleStats | { error: string }>();
   private readonly configFile: string | undefined;
 
   constructor(
@@ -50,16 +57,14 @@ export class BundleMeasurer {
     this.configFile = tsconfig;
   }
 
-  private async bundle(entry: {
-    file: string;
-    contents: string;
-  }): Promise<BundleStats | undefined> {
+  private bundle(entry: { file: string; contents: string }): BundleStats | { error: string } {
     const key = createHash("sha256")
       .update(entry.file)
       .update("\0")
       .update(entry.contents)
       .digest("hex");
-    if (this.cache.has(key)) return this.cache.get(key);
+    const cached = this.cache.get(key);
+    if (cached) return cached;
     const ext = path.extname(entry.file).slice(1);
     const loader = (["tsx", "ts", "jsx", "js"].includes(ext) ? ext : "tsx") as
       "tsx" | "ts" | "jsx" | "js";
@@ -84,21 +89,22 @@ export class BundleMeasurer {
       loader: Object.fromEntries(EMPTY_LOADERS.map((e) => [e, "empty" as const])),
       ...(this.configFile ? { tsconfig: this.configFile } : {}),
     };
-    let stats: BundleStats | undefined;
+    let stats: BundleStats | { error: string };
     try {
-      const result = await build(options);
+      const result = buildSync(options);
       const output =
         result.outputFiles?.find((f) => f.path.endsWith(".js")) ?? result.outputFiles?.[0];
-      if (output) {
-        stats = {
-          gzip: gzipSync(output.contents).length,
-          minified: output.contents.length,
-          inputs: inputBytes(result.metafile),
-        };
-      }
-    } catch {
-      stats = undefined;
+      stats = output
+        ? {
+            gzip: gzipSync(output.contents).length,
+            minified: output.contents.length,
+            inputs: inputBytes(result.metafile),
+          }
+        : { error: "esbuild produced no output" };
+    } catch (error) {
+      stats = { error: describeBuildError(error) };
     }
+    if (this.cache.size >= CACHE_LIMIT) this.cache.delete(this.cache.keys().next().value as string);
     this.cache.set(key, stats);
     return stats;
   }
@@ -107,16 +113,11 @@ export class BundleMeasurer {
    * `isolated` = before − after. `conservative` also leaves out code that other client modules still
    * import (it ships anyway); gzip is apportioned by each input's share of the minified output.
    */
-  async measure(
-    file: string,
-    originalText: string,
-    islandFile: string,
-    islandText: string,
-  ): Promise<BytesSaved | undefined> {
-    const before = await this.bundle({ file, contents: originalText });
-    const after = await this.bundle({ file: islandFile, contents: islandText });
-    // If esbuild can't bundle the file on its own, the saving is unknown (reported as such).
-    if (!before || !after) return undefined;
+  measure(file: string, originalText: string, islandFile: string, islandText: string): Measurement {
+    const before = this.bundle({ file, contents: originalText });
+    if ("error" in before) return before;
+    const after = this.bundle({ file: islandFile, contents: islandText });
+    if ("error" in after) return after;
     const isolated = Math.max(0, before.gzip - after.gzip);
 
     const stillShipped = this.stillShippedElsewhere(file);
@@ -128,7 +129,7 @@ export class BundleMeasurer {
     }
     const ratio = before.minified > 0 ? before.gzip / before.minified : 0;
     const conservative = Math.max(0, Math.round(isolated - sharedBytes * ratio));
-    return { isolated, conservative: Math.min(conservative, isolated) };
+    return { bytesSaved: { isolated, conservative: Math.min(conservative, isolated) } };
   }
 
   /** Packages and project modules imported by some other client module (they keep shipping). */
@@ -153,10 +154,16 @@ export class BundleMeasurer {
       return localFiles.has(path.resolve(this.root, input));
     };
   }
+}
 
-  async dispose(): Promise<void> {
-    this.cache.clear();
-  }
+/** "esbuild: components/Card.tsx:3:20: Could not resolve "virtual-fmt"" */
+function describeBuildError(error: unknown): string {
+  const first = (error as { errors?: Message[] }).errors?.[0];
+  if (!first) return `esbuild: ${error instanceof Error ? error.message : String(error)}`;
+  const loc = first.location
+    ? `${first.location.file}:${first.location.line}:${first.location.column + 1}: `
+    : "";
+  return `esbuild: ${loc}${first.text}`;
 }
 
 function inputBytes(metafile: Metafile | undefined): Map<string, number> {

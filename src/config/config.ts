@@ -1,6 +1,8 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { buildSync } from "esbuild";
 import type { ResolvedConfig, UserConfig } from "../types.js";
 
 const DEFAULT_CONFIG: ResolvedConfig = {
@@ -100,16 +102,20 @@ export function findConfigFile(root: string): string | undefined {
   return CONFIG_FILES.map((f) => path.join(root, f)).find((f) => existsSync(f));
 }
 
+function readJsonConfig(file: string): unknown {
+  try {
+    return JSON.parse(readFileSync(file, "utf8"));
+  } catch (error) {
+    throw new ConfigError(`${path.basename(file)}: invalid JSON (${(error as Error).message})`);
+  }
+}
+
 /** Loads auto-split.config.{ts,mts,mjs,js,json}. TypeScript configs are compiled with esbuild first. */
 export async function loadConfigFile(file: string): Promise<UserConfig> {
   const rel = path.basename(file);
   let raw: unknown;
   if (file.endsWith(".json")) {
-    try {
-      raw = JSON.parse(readFileSync(file, "utf8"));
-    } catch (error) {
-      throw new ConfigError(`${rel}: invalid JSON (${(error as Error).message})`);
-    }
+    raw = readJsonConfig(file);
   } else if (file.endsWith(".ts") || file.endsWith(".mts")) {
     const esbuild = await import("esbuild");
     const result = await esbuild.build({
@@ -151,4 +157,52 @@ export async function loadConfigFile(file: string): Promise<UserConfig> {
     raw = ((await import(pathToFileURL(file).href)) as { default?: unknown }).default;
   }
   return validateConfig(raw, rel);
+}
+
+/**
+ * Synchronous {@link loadConfigFile} for the ESLint rule, which can't await. Every format is
+ * bundled to CommonJS with esbuild and evaluated in place; `auto-server-split` resolves to the same
+ * `defineConfig` shim. The one thing it can't load is a config that uses top-level await.
+ */
+export function loadConfigFileSync(file: string): UserConfig {
+  const rel = path.basename(file);
+  if (file.endsWith(".json")) return validateConfig(readJsonConfig(file), rel);
+  let code: string;
+  try {
+    code =
+      buildSync({
+        entryPoints: [file],
+        bundle: true,
+        write: false,
+        format: "cjs",
+        platform: "node",
+        packages: "external",
+        logLevel: "silent",
+        // CommonJS has no import.meta; give the config the values a native import() would.
+        define: {
+          "import.meta.url": JSON.stringify(pathToFileURL(file).href),
+          "import.meta.dirname": JSON.stringify(path.dirname(file)),
+          "import.meta.filename": JSON.stringify(file),
+        },
+      }).outputFiles[0]?.text ?? "";
+  } catch (error) {
+    const first = (error as { errors?: { text: string }[] }).errors?.[0]?.text;
+    throw new ConfigError(
+      `${rel}: couldn't be loaded synchronously for ESLint (${first ?? String(error)})`,
+    );
+  }
+  const requireFromConfig = createRequire(file);
+  const module = { exports: {} as unknown };
+  const evaluate = new Function("module", "exports", "require", "__filename", "__dirname", code);
+  evaluate(
+    module,
+    module.exports,
+    (id: string) =>
+      id === "auto-server-split" ? { defineConfig: (c: unknown) => c } : requireFromConfig(id),
+    file,
+    path.dirname(file),
+  );
+  const exported = module.exports as { __esModule?: boolean; default?: unknown };
+  // An ES module's `export default`, or a CommonJS `module.exports` (what `import()` returns).
+  return validateConfig(exported.__esModule ? exported.default : exported, rel);
 }

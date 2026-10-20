@@ -190,8 +190,13 @@ export function buildModuleGraph(
   };
 
   if (loaded.lazyFileNames) {
-    // Lazy projects: parse every tsconfig file syntactically (no type checking needed for imports).
-    for (const file of loaded.lazyFileNames) {
+    // Lazy projects: parse every tsconfig file syntactically (no type checking needed for imports),
+    // then follow imports the way TypeScript builds the program: an imported TS file is always part
+    // of it, a JS file only with allowJs (edges resolve with allowJs on, so check the project's own).
+    const allowJs = loaded.compilerOptions.allowJs === true;
+    const queue = [...loaded.lazyFileNames];
+    for (const file of queue) {
+      if (graph.nodes.has(file) || !SOURCE_EXT_RE.test(file)) continue;
       if (file.endsWith(".d.ts") || file.includes(`${path.sep}node_modules${path.sep}`)) continue;
       let text: string;
       try {
@@ -205,6 +210,9 @@ export function buildModuleGraph(
           ? ts.ScriptKind.JS
           : ts.ScriptKind.TS;
       addFile(file, ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, kind), true);
+      for (const edge of graph.nodes.get(file)?.edges ?? []) {
+        if (edge.to && (allowJs || !/\.(jsx?|mjs|cjs)$/.test(edge.to))) queue.push(edge.to);
+      }
     }
   } else {
     for (const sf of projectSourceFiles(loaded)) addFile(path.resolve(sf.fileName), sf, true);

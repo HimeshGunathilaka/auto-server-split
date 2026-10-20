@@ -13,6 +13,7 @@ const TMP = path.resolve(import.meta.dirname, ".tmp");
 async function splitSources(
   files: Record<string, string>,
   config: UserConfig = {},
+  measure = false,
 ): Promise<FileResult[]> {
   const id = createHash("sha1")
     .update(JSON.stringify(files))
@@ -29,7 +30,7 @@ async function splitSources(
     const result = await split({
       root,
       paths: ["."],
-      measure: false,
+      measure,
       noConfigFile: true,
       config: { minBytesSaved: 0, minStaticRatio: 0, ...config },
     });
@@ -43,8 +44,9 @@ export async function splitOne(
   source: string,
   extra: Record<string, string> = {},
   config: UserConfig = {},
+  measure = false,
 ): Promise<FileResult> {
-  const files = await splitSources({ "Comp.tsx": source, ...extra }, config);
+  const files = await splitSources({ "Comp.tsx": source, ...extra }, config, measure);
   const file = files.find((f) => f.file === "Comp.tsx");
   if (!file) throw new Error(`no result for Comp.tsx: ${JSON.stringify(files)}`);
   if (file.skipped?.code === "internal-error") throw new Error(file.skipped.message);

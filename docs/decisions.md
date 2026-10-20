@@ -280,7 +280,8 @@ that applies the split.
 - The rule runs the self-check before reporting (`selfCheck: false` turns it off for speed), so it
   only suggests splits the CLI would actually perform.
 - ESLint rules are synchronous, so the rule reads `auto-split.config.json` but not `.ts`/`.mjs`
-  config files. Rule options (`minStaticRatio`) override it.
+  config files. Rule options (`minStaticRatio`) override it. (Superseded in 1.0: the rule loads
+  every config format synchronously, and its `minStaticRatio` can only raise the config's.)
 
 ## 1.0 — interactive mode, docs, benchmarks
 
@@ -316,6 +317,38 @@ that carries an effect is never a per-item list island, so the effect still runs
 `useContext` and `use(Context)` return the same value for every caller, so a per-item `.map`
 island may call them. Any other hook (state, refs, effects, custom hooks) still hoists the island
 above the `.map`.
+
+### `--interactive` is never a dry run
+
+`--interactive` writes the splits you accept, so combining it with `--dry-run` is an error, like
+`--json` and `--check`, rather than silently writing. `--dry-run` alone already shows every diff.
+
+### A saving that can't be measured doesn't pass `minBytesSaved`
+
+The measurement bundles the original file and the island with esbuild. When esbuild can't (an
+import only the project's own bundler understands, a file type without a loader), the saving is
+unknown. With `minBytesSaved` above 0 the file is skipped as `measure-failed`, with esbuild's error
+in the message: applying a threshold-gated split without knowing the saving would make the
+threshold meaningless. With `minBytesSaved: 0` there's nothing to check, so the file is split and
+the result carries `measureError` ("saving not measured" in the CLI). `--no-measure` remains the
+explicit opt-out. The measurer uses esbuild's synchronous API (no slower in practice) so the CLI
+and the ESLint rule share it.
+
+### The ESLint rule applies the CLI's config and thresholds
+
+The rule's job is to point at splits the CLI will perform, so it can't use a different config or
+skip a check the CLI runs:
+
+- it loads `auto-split.config.{ts,mts,mjs,js,json}` synchronously (esbuild bundles the file to
+  CommonJS, which is evaluated with the same `defineConfig` shim the CLI uses);
+- its `minStaticRatio` option (default 0.5, so lint only flags clear wins) is combined with the
+  config's as a maximum: the option can raise the bar, never lower it below the CLI's;
+- it measures the saving with the same measurer and applies `minBytesSaved` and `measure-failed`
+  (rule option `measure: false` turns this off, like `--no-measure`).
+
+`test/eslint-parity.test.ts` lints projects with each config format, with and without typed
+linting, and requires the rule to report exactly the files `split()` splits, with the same island
+counts and static ratios.
 
 ### Benchmarks
 

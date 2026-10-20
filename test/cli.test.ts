@@ -110,6 +110,54 @@ describe("CLI", () => {
     expect(r.stderr).toContain('"minBytesSaved" must be a non-negative number');
   });
 
+  it("--interactive refuses --dry-run, --json and --check, and writes nothing", () => {
+    freshCopy(true);
+    for (const flag of ["--dry-run", "--json", "--check"]) {
+      const r = run(["PostCard.tsx", "--interactive", flag, "--no-measure"]);
+      expect(r.code).toBe(1);
+      // Rejected for the combination, before it even asks for a terminal.
+      expect(r.stderr).toContain(
+        "--interactive can't be combined with --dry-run, --json or --check",
+      );
+    }
+    expect(existsSync(path.join(dir, "PostCard.client.tsx"))).toBe(false);
+    expect(execFileSync("git", ["status", "--porcelain"], { cwd: dir, encoding: "utf8" })).toBe("");
+  });
+
+  it("--interactive alone still needs a terminal", () => {
+    freshCopy(true);
+    const r = run(["PostCard.tsx", "--interactive", "--no-measure"]);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain("--interactive needs a terminal");
+  });
+
+  it("skips a split whose saving can't be measured, unless minBytesSaved is 0", () => {
+    freshCopy(false);
+    const source = readFileSync(path.join(dir, "PostCard.tsx"), "utf8");
+    writeFileSync(
+      path.join(dir, "PostCard.tsx"),
+      source
+        .replace('import { useState } from "react";', '$&\nimport { fmt } from "virtual-fmt";')
+        .replace("<h2>{post.title}</h2>", "<h2>{fmt(post.title)}</h2>"),
+    );
+    writeFileSync(
+      path.join(dir, "virtual.d.ts"),
+      'declare module "virtual-fmt" { export function fmt(s: string): string; }\n',
+    );
+    const skipped = run(["PostCard.tsx"]);
+    expect(skipped.code).toBe(0);
+    expect(skipped.stdout).toContain("[measure-failed]");
+    expect(skipped.stdout).toContain('Could not resolve "virtual-fmt"');
+    expect(run(["PostCard.tsx", "--check"]).code).toBe(0);
+
+    writeFileSync(path.join(dir, "auto-split.config.json"), JSON.stringify({ minBytesSaved: 0 }));
+    const split = run(["PostCard.tsx"]);
+    expect(split.stdout).toContain("✔ split PostCard.tsx");
+    expect(split.stdout).toContain("saving not measured (esbuild: PostCard.tsx:");
+    expect(split.stdout).toContain("(1 split not measured)");
+    expect(run(["PostCard.tsx", "--check"]).code).toBe(2);
+  });
+
   it("exits 1 for a path that does not exist", () => {
     freshCopy(false);
     expect(run(["nope.tsx"]).code).toBe(1);

@@ -2,7 +2,7 @@ import path from "node:path";
 import type { Rule } from "eslint";
 import { analyzeForLint } from "../engine.js";
 
-type Options = [{ minStaticRatio?: number; selfCheck?: boolean }?];
+type Options = [{ minStaticRatio?: number; selfCheck?: boolean; measure?: boolean }?];
 
 type ParserServicesWithProgram = {
   program?: { getCompilerOptions(): { configFilePath?: unknown } } | null;
@@ -25,6 +25,7 @@ export const preferServerSplit: Rule.RuleModule = {
         properties: {
           minStaticRatio: { type: "number", minimum: 0, maximum: 1 },
           selfCheck: { type: "boolean" },
+          measure: { type: "boolean" },
         },
         additionalProperties: false,
       },

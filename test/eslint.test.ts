@@ -27,6 +27,13 @@ const cases = {
     { code: code("components/Mostly.tsx"), filename: file("components/Mostly.tsx") },
     // not a "use client" file
     { code: code("app/page.tsx"), filename: file("app/page.tsx") },
+    // 33% static passes a lowered minStaticRatio, but the saving is far below minBytesSaved
+    // (2 KB by default), so the CLI would skip it as below-threshold
+    {
+      code: code("components/Mostly.tsx"),
+      filename: file("components/Mostly.tsx"),
+      options: [{ minStaticRatio: 0.3 }],
+    },
   ],
   invalid: [
     {
@@ -43,7 +50,8 @@ const cases = {
     {
       code: code("components/Mostly.tsx"),
       filename: file("components/Mostly.tsx"),
-      options: [{ minStaticRatio: 0.3 }],
+      // measure: false skips the size measurement and minBytesSaved, like --no-measure
+      options: [{ minStaticRatio: 0.3, measure: false }],
       errors: [
         {
           message:
