@@ -12,6 +12,14 @@
   ],
   "license": "MIT",
   "author": "Himesh Gunathilake",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HimeshGunathilaka/auto-server-split.git"
+  },
+  "homepage": "https://github.com/HimeshGunathilaka/auto-server-split#readme",
+  "bugs": {
+    "url": "https://github.com/HimeshGunathilaka/auto-server-split/issues"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
