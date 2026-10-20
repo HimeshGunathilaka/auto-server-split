@@ -97,6 +97,31 @@ describe("size measurement", () => {
     expect(result.skipped?.message).toMatch(/^saves an estimated \d+ B gzip/);
   });
 
+  it("measures a component that imports a CSS Module", async () => {
+    const source = `"use client";
+import { useState } from "react";
+import styles from "./Card.module.css";
+
+export default function Card({ title }: { title: string }) {
+  const [n, setN] = useState(0);
+  return (
+    <section className={styles.card}>
+      <h2 className={styles.title}>{title}</h2>
+      <p>Some static text</p>
+      <button onClick={() => setN(n + 1)}>{n}</button>
+    </section>
+  );
+}
+`;
+    const extra = {
+      "Card.module.css": ".card { padding: 1rem; }\n.title { font-weight: 600; }\n",
+      "css.d.ts": `declare module "*.module.css" { const c: Record<string, string>; export default c; }\n`,
+    };
+    const result = await splitOne(source, extra, { minBytesSaved: 2048 }, true);
+    expect(result.skipped?.code).not.toBe("measure-failed");
+    expect(result.measureError).toBeUndefined();
+  });
+
   it("reports the estimate on every measured split", async () => {
     const result = await splitOne(tiny, {}, { minBytesSaved: 0 }, true);
     expect(result.status).toBe("split");

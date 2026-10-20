@@ -196,9 +196,10 @@ less than `minStaticRatio` of the JSX on the server (default 0.3).
 `minBytesSaved` is above 0, but the saving couldn't be measured, because esbuild couldn't bundle the
 original file or the generated island on its own. The message gives esbuild's error. Typical causes
 are an import that only your framework's bundler understands (a webpack loader, a virtual module
-declared with `declare module`) or a file type esbuild has no loader for (`.md`, `.graphql`). Without
-a measurement the split can't be shown to meet the threshold, so it's skipped rather than applied
-silently.
+declared with `declare module`) or a file type esbuild has no loader for (`.md`, `.graphql`).
+Stylesheets (`.css`, `.module.css`, `.scss`, `.sass`, `.less`), images, fonts and media don't cause
+it: they ship no client JavaScript, so they're measured as empty imports. Without a measurement the
+split can't be shown to meet the threshold, so it's skipped rather than applied silently.
 
 **To fix:** set `minBytesSaved: 0` to split anyway (the result is labelled "saving not measured"),
 or pass `--no-measure` to skip measuring altogether.

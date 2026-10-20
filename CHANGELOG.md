@@ -24,6 +24,10 @@ All notable changes to this project are documented here. The project follows [Se
 - New skip code `measure-failed`: when esbuild can't bundle a file, its saving is unknown, so it no
   longer passes `minBytesSaved` silently. With `minBytesSaved: 0` the file is split and the result
   has `measureError` ("saving not measured" in the CLI output and summary).
+- Size measurement no longer fails on CSS Modules (`import styles from "./Card.module.css"`):
+  esbuild's built-in `local-css` loader for `.module.css` took precedence over the empty `.css`
+  loader, so every such file was skipped as `measure-failed` under the default `minBytesSaved`.
+  `.module.css`, `.module.scss`, `.module.sass` and `.module.less` imports are now measured as empty.
 - The ESLint rule now applies the CLI's config and thresholds: it loads every config format
   (`.ts`, `.mts`, `.mjs`, `.js`, `.json`), its `minStaticRatio` can raise the config's but not
   lower it, and it measures the saving and applies `minBytesSaved` (new option `measure`). It only

@@ -16,7 +16,16 @@ type BundleStats = { gzip: number; minified: number; inputs: Map<string, number>
 /** Bundles kept per run; an editor's ESLint process measures every edit, so this is bounded. */
 const CACHE_LIMIT = 500;
 
+/**
+ * Imports that ship no client JS (or not enough to matter for the estimate). esbuild matches the
+ * longest extension, and its built-in `.module.css` → `local-css` loader would otherwise win over
+ * `.css` and fail ("without an output path configured"), so CSS Modules are listed explicitly.
+ */
 const EMPTY_LOADERS = [
+  ".module.css",
+  ".module.scss",
+  ".module.sass",
+  ".module.less",
   ".css",
   ".scss",
   ".sass",
