@@ -92,7 +92,7 @@ npx auto-server-split --help
    +import { ArticleFooterButton } from "./ArticleFooter.client";
    …
    – skipped components/Badge.tsx [imported-by-client] imported by components/ClientPanel.tsx (client)
-   – skipped components/Banner.tsx:6:5 [state-spans-component] client state is used across the whole returned tree (<div>, <small>)
+   – skipped components/Banner.tsx:6:5 [state-spans-component] client-only code is used across the whole returned tree (<div>, <small>: reads wide)
 
    Summary
      files scanned:  27 (21 with "use client")
@@ -211,6 +211,7 @@ export default defineConfig({
   include: ["app/**", "components/**", "src/**"],
   exclude: ["**/*.test.*", "**/*.stories.*"],
   clientOnlyPackages: ["my-ui-lib/interactive"], // added to the built-in list
+  serverSafePackages: [], // e.g. ["my-icon-lib"]
   serverSafeHooks: [], // e.g. ["useTranslations"]
   clientFileSuffix: ".client", // or islandsDir: "_islands"
   minBytesSaved: 2048, // gzip bytes, conservative estimate

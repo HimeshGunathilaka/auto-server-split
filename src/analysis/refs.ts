@@ -90,7 +90,7 @@ function isValueReference(id: ts.Identifier): boolean {
 }
 
 /** Skips type-only syntax (type annotations, type arguments, `satisfies`/`as` types...). */
-function isTypeSyntax(node: ts.Node): boolean {
+export function isTypeSyntax(node: ts.Node): boolean {
   return ts.isTypeNode(node) && !ts.isExpressionWithTypeArguments(node);
 }
 

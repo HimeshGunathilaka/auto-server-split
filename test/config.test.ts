@@ -21,6 +21,7 @@ const FULL = {
   include: ["src/**"],
   exclude: ["**/*.test.*"],
   clientOnlyPackages: ["my-ui/*"],
+  serverSafePackages: ["my-icons"],
   serverSafeHooks: ["useTranslations"],
   clientFileSuffix: ".island",
   islandsDir: "_islands",

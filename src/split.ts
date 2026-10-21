@@ -69,7 +69,11 @@ export function createRunContext(
     lazy: options.lazy ?? false,
     ...(options.tsconfig ? { tsconfig: options.tsconfig } : {}),
   });
-  const classifier = new PackageClassifier(framework, config.clientOnlyPackages);
+  const classifier = new PackageClassifier(
+    framework,
+    config.clientOnlyPackages,
+    config.serverSafePackages,
+  );
   const graph = buildModuleGraph(loaded, classifier);
   const serverSafeHooks = new Set(config.serverSafeHooks);
   const moduleSafety = new ModuleSafety(

@@ -80,7 +80,7 @@ the file is skipped as `measure-failed`, or, with `minBytesSaved: 0`, split with
       "outputs": {},
       "skipped": {
         "code": "state-spans-component",
-        "message": "client state is used across the whole returned tree (<div>, <small>)",
+        "message": "client-only code is used across the whole returned tree (<div>, <small>: reads wide)",
         "location": { "line": 6, "column": 5 }
       }
     }

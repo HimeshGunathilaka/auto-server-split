@@ -32,6 +32,7 @@ export class PackageClassifier {
   constructor(
     private readonly framework: FrameworkAdapter,
     private readonly extraClientOnly: readonly string[],
+    private readonly extraServerSafe: readonly string[],
   ) {}
 
   /** Classifies a non-relative specifier (or an unresolved relative one with an asset extension). */
@@ -71,17 +72,28 @@ export class PackageClassifier {
     if (matchesPackageList(specifier, CSS_IN_JS_PACKAGES)) return { kind: "css-in-js" };
     if (matchesPackageList(specifier, this.extraClientOnly))
       return { kind: "client-list", detail: "clientOnlyPackages config" };
-    if (matchesPackageList(specifier, BUILTIN_SERVER_SAFE_PACKAGES))
-      return { kind: "server-safe-list" };
-    if (matchesPackageList(specifier, BUILTIN_CLIENT_ONLY_PACKAGES)) return { kind: "client-list" };
+    const serverSafe: { kind: ExternalKind; detail?: string } | undefined = matchesPackageList(
+      specifier,
+      this.extraServerSafe,
+    )
+      ? { kind: "server-safe-list", detail: "serverSafePackages config" }
+      : matchesPackageList(specifier, BUILTIN_SERVER_SAFE_PACKAGES)
+        ? { kind: "server-safe-list" }
+        : undefined;
+    if (!serverSafe && matchesPackageList(specifier, BUILTIN_CLIENT_ONLY_PACKAGES))
+      return { kind: "client-list" };
 
     const pkgDir = findPackageDir(name, path.dirname(fromFile));
-    if (!pkgDir) return { kind: "unresolved", detail: `package ${name} is not installed` };
+    if (!pkgDir)
+      return serverSafe ?? { kind: "unresolved", detail: `package ${name} is not installed` };
     const pkg = readPackageJson(pkgDir);
-    if (!pkg) return { kind: "unresolved", detail: `can't read ${name}/package.json` };
+    if (!pkg)
+      return serverSafe ?? { kind: "unresolved", detail: `can't read ${name}/package.json` };
 
+    // A "use client" entry point is a client reference even in a server-safe package.
     const entry = resolveEntry(pkgDir, pkg, specifier.slice(name.length));
     if (entry && startsWithUseClient(entry)) return { kind: "use-client-entry" };
+    if (serverSafe) return serverSafe;
 
     const deps = { ...pkg.dependencies, ...pkg.peerDependencies, ...pkg.optionalDependencies };
     if ("react" in deps || "react-dom" in deps || "next" in deps || "preact" in deps) {

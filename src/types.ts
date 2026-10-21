@@ -39,6 +39,7 @@ export type UserConfig = {
   include?: string[];
   exclude?: string[];
   clientOnlyPackages?: string[];
+  serverSafePackages?: string[];
   serverSafeHooks?: string[];
   clientFileSuffix?: string;
   islandsDir?: string;
@@ -52,6 +53,7 @@ export type ResolvedConfig = {
   include: string[];
   exclude: string[];
   clientOnlyPackages: string[];
+  serverSafePackages: string[];
   serverSafeHooks: string[];
   clientFileSuffix: string;
   islandsDir: string | undefined;

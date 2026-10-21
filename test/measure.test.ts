@@ -122,6 +122,39 @@ export default function Card({ title }: { title: string }) {
     expect(result.measureError).toBeUndefined();
   });
 
+  it("measures a component that imports a Server Action module", async () => {
+    // The action module imports a Node built-in, as a database driver would. In the client bundle
+    // the import becomes a server reference, so the measurement must not follow it.
+    const source = `"use client";
+import { useState } from "react";
+import { save } from "./actions";
+
+export default function Card({ title }: { title: string }) {
+  const [n, setN] = useState(0);
+  return (
+    <section>
+      <h2>{title}</h2>
+      <p>Some static text</p>
+      <button onClick={() => save(n).then(() => setN(n + 1))}>{n}</button>
+    </section>
+  );
+}
+`;
+    const extra = {
+      "actions.ts": `"use server";
+import { connect } from "net";
+export async function save(n: number): Promise<void> {
+  connect(5432).end(String(n));
+}
+`,
+      "net.d.ts": `declare module "net" { export function connect(port: number): { end(s: string): void }; }\n`,
+    };
+    const result = await splitOne(source, extra, { minBytesSaved: 0 }, true);
+    expect(result.status).toBe("split");
+    expect(result.measureError).toBeUndefined();
+    expect(result.bytesSaved).toBeDefined();
+  });
+
   it("reports the estimate on every measured split", async () => {
     const result = await splitOne(tiny, {}, { minBytesSaved: 0 }, true);
     expect(result.status).toBe("split");

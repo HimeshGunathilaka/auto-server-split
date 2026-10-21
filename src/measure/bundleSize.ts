@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
 import type { BuildOptions, Message, Metafile } from "esbuild";
@@ -51,7 +52,8 @@ const EMPTY_LOADERS = [
 
 /**
  * Estimates the client JavaScript saved by a split: bundle the original client file and
- * the generated island file with esbuild (react, react-dom and next external), and compare gzip sizes.
+ * the generated island file with esbuild (react, react-dom, next and `"use server"` modules
+ * external), and compare gzip sizes.
  * Synchronous, so the CLI and the ESLint rule (which can't await) share it.
  */
 export class BundleMeasurer {
@@ -94,7 +96,15 @@ export class BundleMeasurer {
       jsx: "automatic",
       logLevel: "silent",
       define: { "process.env.NODE_ENV": '"production"' },
-      external: ["react", "react/*", "react-dom", "react-dom/*", "next", "next/*"],
+      external: [
+        "react",
+        "react/*",
+        "react-dom",
+        "react-dom/*",
+        "next",
+        "next/*",
+        ...this.serverActionFiles(),
+      ],
       loader: Object.fromEntries(EMPTY_LOADERS.map((e) => [e, "empty" as const])),
       ...(this.configFile ? { tsconfig: this.configFile } : {}),
     };
@@ -139,6 +149,27 @@ export class BundleMeasurer {
     const ratio = before.minified > 0 ? before.gzip / before.minified : 0;
     const conservative = Math.max(0, Math.round(isolated - sharedBytes * ratio));
     return { bytesSaved: { isolated, conservative: Math.min(conservative, isolated) } };
+  }
+
+  /**
+   * `"use server"` modules, as resolved paths (esbuild matches path-like externals after
+   * resolution, so aliases like `@/app/actions` are covered). In a client bundle the framework
+   * replaces their imports with small server-reference stubs; following them would pull in the
+   * server code (database drivers, Node built-ins) and usually fail to bundle.
+   */
+  private serverActionFiles(): string[] {
+    const files: string[] = [];
+    for (const node of this.graph.nodes.values()) {
+      if (node.directive !== "use server") continue;
+      files.push(node.file);
+      try {
+        const real = realpathSync(node.file);
+        if (real !== node.file) files.push(real);
+      } catch {
+        // A file that vanished since the graph was built can't be imported either.
+      }
+    }
+    return files;
   }
 
   /** Packages and project modules imported by some other client module (they keep shipping). */

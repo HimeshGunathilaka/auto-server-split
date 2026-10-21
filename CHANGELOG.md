@@ -39,6 +39,25 @@ All notable changes to this project are documented here. The project follows [Se
   the original's line ending. They used to come out LF, and an interactive rename turned the whole
   rewritten file LF (ts-morph's `replaceWithText` rewrites line breaks; the self-check now sets
   file text byte for byte).
+- Size measurement no longer follows imports of `"use server"` modules. In the client bundle
+  they're server-reference stubs, but esbuild bundled the server code behind them (for example a
+  Postgres driver) and failed with `Could not resolve "net"`, so every component that imports a
+  Server Action was skipped as `measure-failed` under the default `minBytesSaved`.
+- New option `serverSafePackages`: React packages to treat as server-safe (it also overrides the
+  built-in client-only list). `lucide-react` and `@tabler/icons-react` join the built-in
+  server-safe list. A `"use client"` entry point of a server-safe package (`lucide-react/dynamic`)
+  is still a client reference.
+- Constants an island uses are copied into the island file instead of being passed as props:
+  module-level constants, and body constants that don't depend on props (`const perPage = 6`).
+  As props they showed up as `INITIAL_FORM={INITIAL_FORM}` and as new
+  `react-hooks/exhaustive-deps` warnings inside the island.
+- `state-spans-component` messages say what made each element client-only (for example
+  `<div>, <h2>: cn from @/lib/utils is client-only (src/lib/utils.ts:112 uses Math.random())`)
+  instead of only listing the elements, and say "client-only code" rather than "client state".
+- Client-only code that no rendered element uses gets the same message whether or not the
+  component has other islands.
+- Island names no longer get a number because a type in the file has the same name
+  (`interface ContactForm` no longer turns the island into `ContactForm2`).
 - Repository housekeeping: author and license holder set to Himesh Gunathilake; fixtures moved to
   `test/fixtures/`; `CONTRIBUTING.md`, `.editorconfig`, `.nvmrc`; `format`/`format:check` scripts
   (checked in CI); `noUnusedLocals`/`noUnusedParameters`; unused exports and dead helpers removed.

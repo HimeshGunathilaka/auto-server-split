@@ -61,7 +61,8 @@ _to the server_ is risky. So everything the analysis can't prove server-safe is 
 client-only and ends up inside an island:
 
 - packages that depend on React, have no `"use client"` entry, and aren't on the built-in
-  server-safe list (`@heroicons/react`, `@radix-ui/react-icons`);
+  server-safe list (icon libraries such as `@heroicons/react` and `lucide-react`) or the
+  `serverSafePackages` config;
 - unresolvable imports;
 - project modules that aren't client-free all the way down. A module counts as client-free if
   neither it nor anything it imports (stopping at `"use client"` modules, which become client
@@ -90,11 +91,14 @@ Besides hooks, event props, the common browser globals and client-only packages:
 
 A component-local declaration that an island needs but that isn't serializable (a helper
 function, a class instance) is **copied** into the island instead of failing the split. It's
-removed from the server component when nothing there reads it any more. Module-level helper
-functions and non-serializable module constants are copied into the island file the same way.
-Serializable module constants become props. The copied code ran in the browser
-before, so this keeps the original behaviour. Component props (parameters) and `.map` callback
-variables are never copied; if they aren't serializable the file is skipped.
+removed from the server component when nothing there reads it any more. Module-level
+declarations (helpers and constants, serializable or not) are copied into the island file the same
+way, and so are body constants that don't depend on props or render-time values (`const perPage =
+6`). The copied code ran in the browser before, so this keeps the original behaviour. It also
+keeps hook dependency lists valid: a constant turned into a prop would become a dependency the
+`react-hooks/exhaustive-deps` lint rule asks for. Values computed from props stay on the server
+and cross as props. Component props (parameters) and `.map` callback variables are never copied;
+if they aren't serializable the file is skipped.
 
 ### Stricter candidate rules
 
@@ -333,6 +337,13 @@ threshold meaningless. With `minBytesSaved: 0` there's nothing to check, so the 
 the result carries `measureError` ("saving not measured" in the CLI). `--no-measure` remains the
 explicit opt-out. The measurer uses esbuild's synchronous API (no slower in practice) so the CLI
 and the ESLint rule share it.
+
+### Server Action modules are external when measuring
+
+A client file that imports a `"use server"` module gets a small server-reference stub in its
+bundle, not the module's code. The measurement marks those modules external (by resolved path, so
+aliases are covered) instead of following them into database drivers and Node built-ins, which
+esbuild can't bundle for the browser and which made every such file `measure-failed`.
 
 ### Line endings follow the original file
 

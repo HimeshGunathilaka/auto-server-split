@@ -15,7 +15,7 @@ const goodServer = readFileSync(path.join(fixture, "output/PostCard.tsx"), "utf8
 const goodIsland = readFileSync(path.join(fixture, "output/PostCard.client.tsx"), "utf8");
 
 const loaded = loadProject(path.join(fixture, "input"));
-const classifier = new PackageClassifier(nextAdapter, []);
+const classifier = new PackageClassifier(nextAdapter, [], []);
 const graph = buildModuleGraph(loaded, classifier);
 const moduleSafety = new ModuleSafety(
   () => loaded.project.getProgram().compilerObject,
