@@ -9,6 +9,7 @@ const DEFAULT_CONFIG: ResolvedConfig = {
   include: ["app/**", "components/**", "src/**"],
   exclude: ["**/*.test.*", "**/*.spec.*", "**/*.stories.*"],
   clientOnlyPackages: [],
+  serverSafePackages: [],
   serverSafeHooks: [],
   clientFileSuffix: ".client",
   islandsDir: undefined,
@@ -32,6 +33,7 @@ const KEYS: Record<keyof UserConfig, (v: unknown) => string | undefined> = {
   include: stringArray,
   exclude: stringArray,
   clientOnlyPackages: stringArray,
+  serverSafePackages: stringArray,
   serverSafeHooks: stringArray,
   clientFileSuffix: (v) =>
     typeof v === "string" && /^\.[\w.-]+$/.test(v)

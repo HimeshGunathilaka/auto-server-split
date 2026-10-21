@@ -19,9 +19,10 @@ removed, that module would pull a Server Component into the client bundle, which
 import PostCard from "./PostCard"; // ← PostCard is skipped: imported by components/Sidebar.tsx (client)
 ```
 
-The same code is used when an importer can't be verified: it's outside the TypeScript project
-(for example an `.mdx` file, or a `.js` file without `allowJs`), or (in the ESLint rule without typed
-linting) it couldn't be loaded.
+Only a client module gives this code. Importers outside the TypeScript project (a test file the
+tsconfig excludes, a `.js` file without `allowJs`) are checked without type information and may
+render the component as `<PostCard />` like any other server module; an importer whose usage can't
+be verified is reported as [`unsupported-pattern`](#unsupported-pattern).
 
 **To fix:** render `PostCard` from a Server Component instead, or pass it to the client component as
 `children` / a JSX prop (`<Sidebar card={<PostCard post={post} />} />`). If the importer is client only
@@ -189,6 +190,10 @@ when an exported component (or every component) is entirely interactive.
 The split would save less than `minBytesSaved` (gzip, conservative estimate; default 2048) or keep
 less than `minStaticRatio` of the JSX on the server (default 0.3).
 
+The estimate assumes the other splits the tool proposes for the project are applied too, so two
+components that share a dependency (both use `date-fns`) each get half of it rather than nothing.
+A dependency that a skipped or unsplittable client file still imports counts as still shipped.
+
 **To fix:** lower the thresholds in `auto-split.config.*` if small splits are worth it to you.
 
 ## `measure-failed`
@@ -225,6 +230,9 @@ Valid code that this version can't split safely yet. The message says which patt
 - Next.js `error.tsx` / `global-error.tsx`, which must stay Client Components;
 - module-level `let`/`var`, side effects, or a side-effect import of a JS module;
 - the component used as a value (not as `<X />`) by an importer;
+- an importer whose usage can't be verified: an `.mdx` file, a file outside the TypeScript project
+  that loads it with `require()`, or (in the ESLint rule without typed linting) an importer that
+  couldn't be loaded;
 - a prop type that can't be named in the generated file, or an interactive-mode rename that isn't a
   valid, unused component name.
 

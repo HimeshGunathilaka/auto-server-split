@@ -10,7 +10,7 @@ export function CommentItem({ comment }: { comment: Comment }) {
   return (
     <li>
       <strong>{comment.author}</strong>
-      <CommentItemDiv comment={comment} />
+      <CommentItemDiv comment={{ author: comment.author, text: comment.text }} />
       <LikeButton initial={0} />
     </li>
   );

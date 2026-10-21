@@ -21,6 +21,10 @@ PostCard is 80% static with 1 interactive island (<button>). Run: npx auto-serve
 
 It runs the same engine as the CLI with the same config file, then the same self-check and the
 same size measurement, so it only reports files that `npx auto-server-split <file>` would split.
+Like the CLI's, its size estimate assumes the other splits the CLI proposes for the project (the
+`"use client"` files in the config's `include`) are applied too. It works that set out once per
+ESLint process, the first time it measures a file, which analyses and bundles each of those files
+once. Generated island files (`X.client.tsx`) are never reported.
 
 Options:
 

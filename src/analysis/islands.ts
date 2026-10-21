@@ -11,11 +11,13 @@ import {
   forEachValueRef,
   isIntrinsicTagName,
   isJsxElementLike,
+  isTypeSyntax,
   mapCallOf,
   stripParens,
   symbolOfRef,
   tagNameText,
 } from "./refs.js";
+import { pickReadFields } from "./fields.js";
 import type { PickedProp } from "./mongoose.js";
 import { isMongooseLike, pickMongooseFields } from "./mongoose.js";
 import { checkSerializable, isCallableType } from "./serializable.js";
@@ -67,7 +69,10 @@ export type PropInfo = {
   type: ts.Type;
   /** A reference inside the island, used as the location for type printing and narrowing. */
   refNode: ts.Identifier;
-  /** Mongoose/ObjectId values: only the fields the island reads, built on the server. */
+  /**
+   * Only the fields the island reads, as an object built on the server: for a plain object the
+   * island reads part of, and for Mongoose/ObjectId values (`mongoose.autoSerialize`).
+   */
   picked?: PickedProp;
 };
 
@@ -747,6 +752,13 @@ export function planComponent(
 
   const clientUnits = units.filter((u) => u.client);
   const totalJsx = jnodes.length;
+  /** A client statement (typically an effect) that no island would carry. */
+  const unconnected = (unit: Unit) =>
+    skip(
+      "unsupported-pattern",
+      `client-only code at line ${locOf(ctx, unit.node).line} isn't connected to any rendered element; moving it would change when it runs`,
+      locOf(ctx, unit.node),
+    );
 
   if (anchors.length === 0) {
     if (clientUnits.length === 0 && clientModuleDecls.size === 0) {
@@ -756,13 +768,9 @@ export function planComponent(
       );
     }
     const first = clientUnits[0];
-    return skip(
-      "unsupported-pattern",
-      first
-        ? `client-only code at line ${locOf(ctx, first.node).line} isn't connected to any rendered element`
-        : "client-only helpers aren't connected to any rendered element",
-      first ? locOf(ctx, first.node) : undefined,
-    );
+    return first
+      ? unconnected(first)
+      : skip("unsupported-pattern", "client-only helpers aren't connected to any rendered element");
   }
 
   const uf = new UnionFind();
@@ -1014,7 +1022,7 @@ export function planComponent(
       }
       return skip(
         "state-spans-component",
-        `client state is used across the whole returned tree (${describeAnchors(sf, group.anchors)})`,
+        `client-only code is used across the whole returned tree (${describeAnchors(sf, group.anchors)})`,
         locOf(ctx, group.root.node),
       );
     }
@@ -1026,16 +1034,63 @@ export function planComponent(
     for (const unit of unitsOfGroup(group)) if (unit.client) assigned.set(unit, group);
   for (const unit of clientUnits) {
     if (unit.kind === "early-return") continue;
-    if (!assigned.has(unit)) {
-      return skip(
-        "unsupported-pattern",
-        `client-only code at line ${locOf(ctx, unit.node).line} isn't connected to any rendered element; moving it would change when it runs`,
-        locOf(ctx, unit.node),
-      );
-    }
+    if (!assigned.has(unit)) return unconnected(unit);
   }
 
   // ---- build island plans: statements, props, imports ----------------------------------------------
+  /**
+   * A body `const` whose value doesn't depend on props or on anything computed at render time
+   * (`const perPage = 6`, an array of literals). The island declares it too instead of taking it
+   * as a prop, so the value isn't serialized and hook dependency lists stay as they were.
+   */
+  const constantUnits = new Map<Unit, boolean>();
+  const isConstantUnit = (unit: Unit): boolean => {
+    const known = constantUnits.get(unit);
+    if (known !== undefined) return known;
+    constantUnits.set(unit, false);
+    if (unit.kind !== "var" || unit.client) return false;
+    let constant = true;
+    const visit = (n: ts.Node): void => {
+      if (!constant || isTypeSyntax(n)) return;
+      if (
+        ts.isCallExpression(n) ||
+        ts.isNewExpression(n) ||
+        ts.isTaggedTemplateExpression(n) ||
+        ts.isFunctionLike(n) ||
+        ts.isClassExpression(n) ||
+        ts.isAwaitExpression(n) ||
+        ts.isYieldExpression(n) ||
+        ts.isDeleteExpression(n) ||
+        ts.isPostfixUnaryExpression(n) ||
+        (ts.isPrefixUnaryExpression(n) &&
+          (n.operator === ts.SyntaxKind.PlusPlusToken ||
+            n.operator === ts.SyntaxKind.MinusMinusToken)) ||
+        (ts.isBinaryExpression(n) &&
+          n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+          n.operatorToken.kind <= ts.SyntaxKind.LastAssignment) ||
+        isJsxElementLike(n)
+      ) {
+        constant = false;
+        return;
+      }
+      ts.forEachChild(n, visit);
+    };
+    for (const decl of (unit.node as ts.VariableStatement).declarationList.declarations) {
+      if (decl.initializer) visit(decl.initializer);
+    }
+    if (constant) {
+      forEachValueRef(unit.node, (id) => {
+        if (!constant) return;
+        const origin = originOf(id);
+        if (origin.kind === "local") constant = isConstantUnit(origin.unit);
+        else if (origin.kind === "import") constant = origin.usage.cls !== "server-only";
+        else constant = origin.kind === "module" || origin.kind === "global";
+      });
+    }
+    constantUnits.set(unit, constant);
+    return constant;
+  };
+
   groups.sort((a, b) => a.root.node.getStart(sf) - b.root.node.getStart(sf));
   const islands: IslandPlan[] = [];
   const copiedUnits = new Set<Unit>();
@@ -1183,7 +1238,8 @@ export function planComponent(
             const needsCopy =
               unit.kind === "function" ||
               isCallableType(type) ||
-              !checkSerializable(checker, type, { primitivesOnly: ctx.isJs }).ok;
+              !checkSerializable(checker, type, { primitivesOnly: ctx.isJs }).ok ||
+              isConstantUnit(unit);
             if (needsCopy) {
               islandUnits.add(unit);
               copiedUnits.add(unit);
@@ -1206,16 +1262,9 @@ export function planComponent(
           case "module": {
             const decl = origin.decl;
             if (moduleDecls.has(decl)) return;
-            // Inside copied module-level code, names resolve at module scope of the island file,
-            // so they're copied too; only references from the component body can become props.
-            const fromModuleLevel = moduleLevelScopes.has(scope);
-            if (!fromModuleLevel && decl.kind === "const" && !clientModuleDecls.has(decl)) {
-              const type = checker.getTypeAtLocation(id);
-              if (checkSerializable(checker, type, { primitivesOnly: ctx.isJs }).ok) {
-                failure = addProp(id, origin.symbol);
-                return;
-              }
-            }
+            // Module-level code already ran in the client bundle before the split, so the island
+            // file gets its own copy (constants included) rather than a prop: the value and its
+            // identity in hook dependency lists stay as they were.
             moduleDecls.add(decl);
             moduleLevelScopes.add(decl.statement);
             pending.push(decl.statement);
@@ -1274,29 +1323,35 @@ export function planComponent(
       if (failure) return { ok: false, skip: failure };
     }
 
+    /** References to a prop inside the island (not in its `key` or in server-rendered slots). */
+    const islandRefs = (prop: PropInfo): ts.Identifier[] => {
+      const refs: ts.Identifier[] = [];
+      for (const scope of [rootNode, ...[...islandUnits].map((u) => u.node)]) {
+        forEachValueRef(scope, (id) => {
+          if ((keyAttr && containsRange(keyAttr, id)) || inSlot(id)) return;
+          if (symbolOfRef(checker, id) === prop.symbol) refs.push(id);
+        });
+      }
+      return refs;
+    };
+    const printType = (t: ts.Type) =>
+      checker.typeToString(
+        t,
+        rootNode,
+        ts.TypeFormatFlags.NoTruncation | ts.TypeFormatFlags.UseAliasDefinedOutsideCurrentScope,
+      );
     for (const prop of props.values()) {
       if (serverActionParams.has(prop.symbol)) continue; // a Server Action reference crosses as-is
       const verdict = checkSerializable(checker, prop.type, { primitivesOnly: ctx.isJs });
-      if (
-        !verdict.ok &&
-        !ctx.isJs &&
-        ctx.config.mongoose.autoSerialize &&
-        isMongooseLike(checker, prop.type)
-      ) {
-        const refs: ts.Identifier[] = [];
-        for (const scope of [rootNode, ...[...islandUnits].map((u) => u.node)]) {
-          forEachValueRef(scope, (id) => {
-            if ((keyAttr && containsRange(keyAttr, id)) || inSlot(id)) return;
-            if (symbolOfRef(checker, id) === prop.symbol) refs.push(id);
-          });
-        }
-        const picked = pickMongooseFields(checker, prop.name, refs, (t) =>
-          checker.typeToString(
-            t,
-            rootNode,
-            ts.TypeFormatFlags.NoTruncation | ts.TypeFormatFlags.UseAliasDefinedOutsideCurrentScope,
-          ),
-        );
+      if (verdict.ok) {
+        const picked = ctx.isJs
+          ? undefined
+          : pickReadFields(checker, prop.name, prop.type, islandRefs(prop), printType);
+        if (picked) prop.picked = picked;
+        continue;
+      }
+      if (!ctx.isJs && ctx.config.mongoose.autoSerialize && isMongooseLike(checker, prop.type)) {
+        const picked = pickMongooseFields(checker, prop.name, islandRefs(prop), printType);
         if (picked.ok) {
           prop.picked = picked.value;
           continue;
@@ -1307,22 +1362,20 @@ export function planComponent(
           locOf(ctx, prop.refNode),
         );
       }
-      if (!verdict.ok) {
-        const typeText = checker.typeToString(prop.type, rootNode, ts.TypeFormatFlags.NoTruncation);
-        const usedInSpread = isSpreadInside(rootNode, prop.symbol, checker);
-        if (ctx.isJs) {
-          return skip(
-            "untyped-boundary",
-            `\`${prop.name}\` would cross the server/client boundary, but its type in this untyped file (\`${typeText}\`) can't be proven serializable`,
-            locOf(ctx, prop.refNode),
-          );
-        }
+      const typeText = checker.typeToString(prop.type, rootNode, ts.TypeFormatFlags.NoTruncation);
+      const usedInSpread = isSpreadInside(rootNode, prop.symbol, checker);
+      if (ctx.isJs) {
         return skip(
-          usedInSpread ? "spread-props" : "non-serializable-prop",
-          `\`${prop.name}\` (type \`${typeText}\`) would be passed to a Client Component, but it ${verdict.reason}`,
+          "untyped-boundary",
+          `\`${prop.name}\` would cross the server/client boundary, but its type in this untyped file (\`${typeText}\`) can't be proven serializable`,
           locOf(ctx, prop.refNode),
         );
       }
+      return skip(
+        usedInSpread ? "spread-props" : "non-serializable-prop",
+        `\`${prop.name}\` (type \`${typeText}\`) would be passed to a Client Component, but it ${verdict.reason}`,
+        locOf(ctx, prop.refNode),
+      );
     }
 
     if (keyAttr) {
@@ -1484,7 +1537,19 @@ function isSpreadInside(root: ts.Node, symbol: ts.Symbol, checker: ts.TypeChecke
   return found;
 }
 
-function describeAnchors(sf: ts.SourceFile, anchors: { j: JNode }[]): string {
-  const tags = [...new Set(anchors.map((a) => `<${tagNameText(sf, a.j.node)}>`))];
-  return tags.slice(0, 4).join(", ") + (tags.length > 4 ? ", ..." : "");
+/** "<div>, <h2>: cn from @/lib/utils is client-only (...); <button>: has onClick" */
+function describeAnchors(sf: ts.SourceFile, anchors: { j: JNode; reasons: string[] }[]): string {
+  const tagsByReason = new Map<string, string[]>();
+  for (const anchor of anchors) {
+    const reason = anchor.reasons[0] ?? "client-only";
+    const tags = tagsByReason.get(reason) ?? [];
+    const tag = `<${tagNameText(sf, anchor.j.node)}>`;
+    if (!tags.includes(tag)) tags.push(tag);
+    tagsByReason.set(reason, tags);
+  }
+  const parts = [...tagsByReason].map(
+    ([reason, tags]) =>
+      `${tags.slice(0, 4).join(", ")}${tags.length > 4 ? ", ..." : ""}: ${reason}`,
+  );
+  return parts.slice(0, 3).join("; ") + (parts.length > 3 ? "; ..." : "");
 }

@@ -20,7 +20,42 @@ export class ModuleGraph {
   /** Client-graph membership: file -> the module it was first reached from (null for "use client" roots). */
   private readonly clientParent = new Map<string, string | null>();
 
+  /** Edges of source text that isn't a node (a generated island file). Set by buildModuleGraph. */
+  edgesOfText: (file: string, text: string) => ModuleEdge[] = () => [];
+
   constructor(readonly root: string) {}
+
+  /**
+   * The client graph as it would be with `split` applied: the split files stop being client roots
+   * and their island files become roots. Returns every project module it reaches and the packages
+   * those modules import.
+   */
+  clientGraphAfter(split: readonly { file: string; islandFile: string; islandText: string }[]): {
+    files: Set<string>;
+    packages: Set<string>;
+  } {
+    const splitFiles = new Set(split.map((s) => s.file));
+    const files = new Set<string>();
+    const packages = new Set<string>();
+    const pending: ModuleEdge[][] = [];
+    for (const node of this.nodes.values()) {
+      if (node.directive !== "use client" || splitFiles.has(node.file)) continue;
+      files.add(node.file);
+      pending.push(node.edges);
+    }
+    for (const s of split) pending.push(this.edgesOfText(s.islandFile, s.islandText));
+    for (let edges = pending.pop(); edges; edges = pending.pop()) {
+      for (const edge of edges) {
+        if (edge.kind === "type") continue;
+        if (edge.external) packages.add(edge.external.packageName);
+        if (edge.to && !files.has(edge.to)) {
+          files.add(edge.to);
+          pending.push(this.edgesFrom(edge.to));
+        }
+      }
+    }
+    return { files, packages };
+  }
 
   addNode(node: ModuleNode): void {
     this.nodes.set(node.file, node);
@@ -49,6 +84,20 @@ export class ModuleGraph {
         this.clientParent.set(edge.to, file);
         queue.push(edge.to);
       }
+    }
+  }
+
+  /**
+   * A source file outside the TypeScript program, parsed without type information. Undefined for
+   * MDX and unreadable files.
+   */
+  parseOutsideProgram(file: string): ts.SourceFile | undefined {
+    if (!SOURCE_EXT_RE.test(file)) return undefined;
+    try {
+      const text = readFileSync(file, "utf8");
+      return ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, scriptKind(file));
+    } catch {
+      return undefined;
     }
   }
 
@@ -138,6 +187,12 @@ function collectImports(sf: ts.SourceFile): RawImport[] {
 
 const MDX_IMPORT_RE = /^\s*(?:import|export)\s+(?:[^'"]*?\s+from\s+)?['"]([^'"]+)['"]/gm;
 
+/** How TypeScript should parse a source file, by extension (JSX is allowed in .js files). */
+function scriptKind(file: string): ts.ScriptKind {
+  if (/\.(tsx|jsx)$/.test(file)) return ts.ScriptKind.TSX;
+  return /\.(js|mjs|cjs)$/.test(file) ? ts.ScriptKind.JS : ts.ScriptKind.TS;
+}
+
 export function buildModuleGraph(
   loaded: LoadedProject,
   classifier: PackageClassifier,
@@ -157,6 +212,32 @@ export function buildModuleGraph(
     return resolved;
   };
 
+  const edgesOf = (file: string, raw: RawImport[]): ModuleEdge[] =>
+    raw.map((imp) => {
+      const to = resolve(imp.specifier, file);
+      return {
+        from: file,
+        specifier: imp.specifier,
+        kind: imp.kind,
+        to,
+        external: to ? undefined : classifier.classify(imp.specifier, file),
+        line: imp.line,
+      };
+    });
+  // Size estimates parse the same island texts repeatedly; keep a bounded cache.
+  const textEdges = new Map<string, ModuleEdge[]>();
+  graph.edgesOfText = (file, text) => {
+    const key = `${file}\0${text}`;
+    let edges = textEdges.get(key);
+    if (!edges) {
+      const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, scriptKind(file));
+      edges = edgesOf(file, collectImports(sf));
+      if (textEdges.size >= 1000) textEdges.clear();
+      textEdges.set(key, edges);
+    }
+    return edges;
+  };
+
   const addFile = (
     file: string,
     sf: ts.SourceFile | undefined,
@@ -170,17 +251,7 @@ export function buildModuleGraph(
           kind: "static" as const,
           line: (mdxText ?? "").slice(0, m.index).split("\n").length,
         }));
-    const edges: ModuleEdge[] = raw.map((imp) => {
-      const to = resolve(imp.specifier, file);
-      return {
-        from: file,
-        specifier: imp.specifier,
-        kind: imp.kind,
-        to,
-        external: to ? undefined : classifier.classify(imp.specifier, file),
-        line: imp.line,
-      };
-    });
+    const edges = edgesOf(file, raw);
     graph.addNode({
       file,
       directive: sf ? getModuleDirective(sf).directive : undefined,
@@ -204,12 +275,8 @@ export function buildModuleGraph(
       } catch {
         continue;
       }
-      const kind = /\.(tsx|jsx)$/.test(file)
-        ? ts.ScriptKind.TSX
-        : /\.(js|mjs|cjs)$/.test(file)
-          ? ts.ScriptKind.JS
-          : ts.ScriptKind.TS;
-      addFile(file, ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, kind), true);
+      const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, scriptKind(file));
+      addFile(file, sf, true);
       for (const edge of graph.nodes.get(file)?.edges ?? []) {
         if (edge.to && (allowJs || !/\.(jsx?|mjs|cjs)$/.test(edge.to))) queue.push(edge.to);
       }
@@ -234,8 +301,8 @@ export function buildModuleGraph(
     }
     if (file.endsWith(".mdx")) addFile(file, undefined, false, text);
     else if (SOURCE_EXT_RE.test(file)) {
-      const kind = /\.(tsx|jsx)$/.test(file) ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
-      addFile(file, ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, kind), false);
+      const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, scriptKind(file));
+      addFile(file, sf, false);
     }
   }
 

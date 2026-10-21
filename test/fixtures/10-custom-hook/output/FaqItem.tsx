@@ -8,7 +8,7 @@ export default function FaqItem({ faq }: { faq: Faq }) {
       <span className="category">{faq.category}</span>
       <h3>{faq.question}</h3>
       <p className="lead">Frequently asked</p>
-      <FaqItemDiv faq={faq} />
+      <FaqItemDiv faq={{ answer: faq.answer }} />
     </div>
   );
 }

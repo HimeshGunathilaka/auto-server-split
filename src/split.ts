@@ -17,16 +17,16 @@ import { ModuleSafety } from "./analysis/moduleSafety.js";
 import type { Outcome, Skip } from "./analysis/skip.js";
 import { ok, skip } from "./analysis/skip.js";
 import { FileFacts, findEnvProblem } from "./analysis/taint.js";
-import { findConfigFile, loadConfigFile, resolveConfig } from "./config/config.js";
+import { findConfigFile, loadConfigFile, resolveConfig, validateConfig } from "./config/config.js";
 import { couldBecomeRoute, nextAdapter, readPageExtensions } from "./frameworks/next.js";
-import type { BundleMeasurer } from "./measure/bundleSize.js";
+import type { BundleMeasurer, Measurement, SplitCandidate } from "./measure/bundleSize.js";
 import type { LoadedProject } from "./project/loadProject.js";
 import { IGNORE_GLOBS, loadProject } from "./project/loadProject.js";
 import type { ModuleGraph } from "./project/moduleGraph.js";
 import { buildModuleGraph } from "./project/moduleGraph.js";
 import { PackageClassifier } from "./project/packages.js";
 import { emitSplit } from "./transform/emit.js";
-import { formatWithProjectPrettier } from "./transform/format.js";
+import { projectFormatter } from "./transform/format.js";
 import { hasMixedLineEndings, lineEndingOf, withLineEnding } from "./transform/text.js";
 import type { FileResult, IslandInfo, ResolvedConfig, SplitOptions, SplitResult } from "./types.js";
 import { selfCheck } from "./verify/selfCheck.js";
@@ -44,18 +44,19 @@ export type RunContext = {
   serverSafeHooks: ReadonlySet<string>;
   pageExtensions: ReturnType<typeof readPageExtensions>;
   measurer: BundleMeasurer | undefined;
+  /** The splits the run's size estimates assume (see estimateSavings), once computed. */
+  estimate?: SavingsEstimate;
 };
 
-type Saving = {
-  bytesSaved?: { isolated: number; conservative: number };
-  measureError?: string;
-};
+type Saving = Pick<FileResult, "bytesSaved" | "measureError">;
 
-type Planned = Saving & {
+/** A split that passed analysis, formatting and the self-check; its saving comes later. */
+type Planned = {
   outputs: Record<string, string>;
   islands: IslandInfo[];
   staticRatio: number;
   originalText: string;
+  candidate: SplitCandidate;
 };
 
 /** Builds the shared state for one run: project, module graph, classifiers. Synchronous. */
@@ -69,7 +70,11 @@ export function createRunContext(
     lazy: options.lazy ?? false,
     ...(options.tsconfig ? { tsconfig: options.tsconfig } : {}),
   });
-  const classifier = new PackageClassifier(framework, config.clientOnlyPackages);
+  const classifier = new PackageClassifier(
+    framework,
+    config.clientOnlyPackages,
+    config.serverSafePackages,
+  );
   const graph = buildModuleGraph(loaded, classifier);
   const serverSafeHooks = new Set(config.serverSafeHooks);
   const moduleSafety = new ModuleSafety(
@@ -107,7 +112,10 @@ export async function runSplit(options: SplitOptions = {}): Promise<
       ? path.resolve(root, options.configFile)
       : findConfigFile(root);
   const fileConfig = configFile ? await loadConfigFile(configFile) : undefined;
-  const config = resolveConfig(fileConfig, options.config);
+  const overrides = options.config
+    ? validateConfig(options.config, "split({ config })")
+    : undefined;
+  const config = resolveConfig(fileConfig, overrides);
 
   const run = createRunContext(root, config);
   if (options.measure !== false) {
@@ -117,14 +125,38 @@ export async function runSplit(options: SplitOptions = {}): Promise<
   const { graph } = run;
 
   const targets = selectTargets(root, options.paths, config);
-  const files: FileResult[] = [];
+  const results = new Map<string, FileResult>();
+  const report = (file: string, result: FileResult) => {
+    results.set(file, result);
+    options.onFile?.(result);
+  };
+  // Analyse every target first: a file's estimated saving depends on the other splits.
+  const planned = new Map<string, Planned>();
   for (const file of targets) {
     const node = graph.nodes.get(file);
     if (node?.directive !== "use client") continue;
-    const result = await processFile(run, file);
-    files.push(result);
-    options.onFile?.(result);
+    const outcome = await planSafely(run, file);
+    if (!outcome.ok) report(file, skippedResult(run, file, outcome.skip));
+    else if (run.measurer) planned.set(file, outcome.value);
+    else report(file, splitResult(run, file, outcome.value, {}));
   }
+  if (run.measurer && planned.size > 0) {
+    run.estimate = estimateSavings(
+      run,
+      [...planned.values()].map((p) => p.candidate),
+      new Set(targets),
+    );
+    for (const [file, value] of planned) {
+      const saving = run.estimate.outcome(value.candidate);
+      report(
+        file,
+        saving.ok
+          ? splitResult(run, file, value, saving.value)
+          : skippedResult(run, file, saving.skip),
+      );
+    }
+  }
+  const files = targets.flatMap((file) => results.get(file) ?? []);
 
   if (options.write) {
     for (const result of files) {
@@ -139,10 +171,19 @@ export async function runSplit(options: SplitOptions = {}): Promise<
   return {
     files,
     filesScanned: targets.length,
-    rerun: (relFile, renames) => processFile(run, path.resolve(root, relFile), renames),
+    rerun: async (relFile, renames) => {
+      const file = path.resolve(root, relFile);
+      const outcome = await planSafely(run, file, renames);
+      if (!outcome.ok) return skippedResult(run, file, outcome.skip);
+      const saving = run.estimate?.outcome(outcome.value.candidate) ?? ok({});
+      return saving.ok
+        ? splitResult(run, file, outcome.value, saving.value)
+        : skippedResult(run, file, saving.skip);
+    },
   };
 }
 
+/** The "use client" files a run targets: `paths`, or the config's `include` globs. */
 function selectTargets(
   root: string,
   paths: string[] | undefined,
@@ -169,63 +210,71 @@ function selectTargets(
     );
   }
   return [...new Set(files.map((f) => path.resolve(f)))]
-    .filter((f) => /\.(tsx|jsx|ts|js|mts|mjs)$/.test(f))
+    .filter((f) => /\.(tsx|jsx|ts|js|mts|mjs)$/.test(f) && !isIslandFile(f, config))
     .sort();
+}
+
+/** `X.client.tsx`: a generated island (or a file named like one), never a candidate itself. */
+export function isIslandFile(file: string, config: ResolvedConfig): boolean {
+  return path.basename(file, path.extname(file)).endsWith(config.clientFileSuffix);
 }
 
 function rel(root: string, file: string): string {
   return path.relative(root, file).split(path.sep).join("/");
 }
 
-async function processFile(
+/** {@link planFile}, with unexpected errors reported as `internal-error` skips. */
+async function planSafely(
   run: RunContext,
   file: string,
   renames: Readonly<Record<string, string>> = {},
-): Promise<FileResult> {
-  const relFile = rel(run.root, file);
-  const base: FileResult = {
-    file: relFile,
+): Promise<Outcome<Planned>> {
+  try {
+    return await planFile(run, file, renames);
+  } catch (error) {
+    const err = error as Error;
+    return skip("internal-error", `${err.message}\n${err.stack ?? ""}`);
+  }
+}
+
+function skippedResult(run: RunContext, file: string, skipped: Skip): FileResult {
+  return {
+    file: rel(run.root, file),
     status: "skipped",
+    skipped,
     islands: [],
     staticRatio: 0,
     diff: "",
     outputs: {},
   };
-  try {
-    const planned = await planFile(run, file, renames);
-    if (!planned.ok) return { ...base, skipped: planned.skip };
-    const value = planned.value;
-    const diff = Object.entries(value.outputs)
-      .map(([relPath, content]) => {
-        const isOriginal = relPath === relFile;
-        return createTwoFilesPatch(
-          isOriginal ? `a/${relPath}` : "/dev/null",
-          `b/${relPath}`,
-          isOriginal ? value.originalText : "",
-          content,
-          undefined,
-          undefined,
-          { context: 3 },
-        );
-      })
-      .join("");
-    return {
-      file: relFile,
-      status: "split",
-      islands: value.islands,
-      staticRatio: value.staticRatio,
-      ...(value.bytesSaved ? { bytesSaved: value.bytesSaved } : {}),
-      ...(value.measureError ? { measureError: value.measureError } : {}),
-      diff,
-      outputs: value.outputs,
-    };
-  } catch (error) {
-    const err = error as Error;
-    return {
-      ...base,
-      skipped: { code: "internal-error", message: `${err.message}\n${err.stack ?? ""}` },
-    };
-  }
+}
+
+function splitResult(run: RunContext, file: string, value: Planned, saving: Saving): FileResult {
+  const relFile = rel(run.root, file);
+  const diff = Object.entries(value.outputs)
+    .map(([relPath, content]) => {
+      const isOriginal = relPath === relFile;
+      return createTwoFilesPatch(
+        isOriginal ? `a/${relPath}` : "/dev/null",
+        `b/${relPath}`,
+        isOriginal ? value.originalText : "",
+        content,
+        undefined,
+        undefined,
+        { context: 3 },
+      );
+    })
+    .join("");
+  return {
+    file: relFile,
+    status: "split",
+    islands: value.islands,
+    staticRatio: value.staticRatio,
+    ...(saving.bytesSaved ? { bytesSaved: saving.bytesSaved } : {}),
+    ...(saving.measureError ? { measureError: saving.measureError } : {}),
+    diff,
+    outputs: value.outputs,
+  };
 }
 
 /** Everything the synchronous part of the pipeline produces (used by the CLI/API and the ESLint rule). */
@@ -513,58 +562,117 @@ async function planFile(
   const a = analyzed.value;
   let serverText = a.serverText;
   let islandText = a.islandText;
-  if (config.prettier === "auto") {
-    serverText = await formatWithProjectPrettier(root, file, serverText);
-    islandText = await formatWithProjectPrettier(root, a.islandFile, islandText);
+  const format =
+    config.prettier === "auto" ? await projectFormatter(root, file, a.originalText) : undefined;
+  if (format) {
+    serverText = await format(file, serverText);
+    islandText = await format(a.islandFile, islandText);
   }
 
   const checked = checkAnalyzed(run, a, serverText, islandText);
   if (!checked.ok) return checked;
-  const saving = measureAnalyzed(run, a, islandText);
-  if (!saving.ok) return saving;
 
   return ok({
     outputs: { [rel(root, file)]: serverText, [rel(root, a.islandFile)]: islandText },
     islands: a.islands,
     staticRatio: a.staticRatio,
-    ...saving.value,
     originalText: a.originalText,
+    candidate: { file, originalText: a.originalText, islandFile: a.islandFile, islandText },
   });
 }
 
+/** The splits a run's size estimates assume, and the saving of any split measured against them. */
+export type SavingsEstimate = {
+  /**
+   * The saving of `candidate` (a kept one, a dropped one, or a new version of one) when it is split
+   * along with the candidates that pass `minBytesSaved` together, with the threshold applied.
+   */
+  outcome(candidate: SplitCandidate): Outcome<Saving>;
+};
+
 /**
- * Measures the saving (when the run has a measurer) and applies `minBytesSaved`. A saving that
- * can't be measured can't be shown to meet a non-zero threshold, so it skips. Synchronous.
+ * Size estimates assume every split the tool would propose for the project is applied: `planned`
+ * (the run's own splits) plus the splits of the other "use client" files in the config's
+ * `include`, so a file's estimate doesn't depend on which paths a run covers. `decided` files (the
+ * run's targets) are never re-analysed. A split below `minBytesSaved` (or one that can't be
+ * measured, unless the threshold is 0) is dropped, which can lower the others' savings: code they
+ * shared with it keeps shipping. So dropping repeats until the set is stable. `prepare` runs
+ * before each extra file is analysed (the ESLint rule loads it into its lazy project). Synchronous.
  */
-export function measureAnalyzed(
+export function estimateSavings(
   run: RunContext,
-  analyzed: Analyzed,
-  islandText = analyzed.islandText,
-): Outcome<Saving> {
+  planned: SplitCandidate[],
+  decided: ReadonlySet<string> = new Set(),
+  prepare?: (file: string) => void,
+): SavingsEstimate {
   const { measurer, config } = run;
-  if (!measurer) return ok({});
-  const measured = measurer.measure(
-    analyzed.file,
-    analyzed.originalText,
-    analyzed.islandFile,
-    islandText,
-  );
+  if (!measurer) return { outcome: () => ok({}) };
+  const candidates = new Map(planned.map((c) => [c.file, c]));
+  for (const file of selectTargets(run.root, undefined, config)) {
+    if (candidates.has(file) || decided.has(file)) continue;
+    if (run.graph.nodes.get(file)?.directive !== "use client") continue;
+    try {
+      prepare?.(file);
+      const analyzed = analyzeFile(run, file);
+      if (analyzed.ok) {
+        const { originalText, islandFile, islandText } = analyzed.value;
+        candidates.set(file, { file, originalText, islandFile, islandText });
+      }
+    } catch {
+      // Reported when that file itself is split or linted; here it just isn't a split.
+    }
+  }
+
+  const passes = (m: Measurement | undefined): boolean =>
+    m !== undefined &&
+    ("error" in m ? config.minBytesSaved === 0 : m.bytesSaved.conservative >= config.minBytesSaved);
+  let kept = [...candidates.values()];
+  let measured = measurer.measure(kept);
+  for (;;) {
+    const next = kept.filter((c) => passes(measured.get(c.file)));
+    if (next.length === kept.length) break;
+    kept = next;
+    measured = measurer.measure(kept);
+  }
+  const final = kept;
+  const finalMeasured = measured;
+  return {
+    outcome: (candidate) => {
+      const same = final.find((c) => c.file === candidate.file);
+      const m =
+        same?.originalText === candidate.originalText && same.islandText === candidate.islandText
+          ? finalMeasured.get(candidate.file)
+          : measurer
+              .measure([...final.filter((c) => c.file !== candidate.file), candidate])
+              .get(candidate.file);
+      return savingOutcome(run, m);
+    },
+  };
+}
+
+/** Applies `minBytesSaved` to a measurement. */
+function savingOutcome(run: RunContext, m: Measurement | undefined): Outcome<Saving> {
+  const { config, root } = run;
+  if (!m) return ok({});
   const threshold = formatBytes(config.minBytesSaved);
-  if ("error" in measured) {
-    if (config.minBytesSaved === 0) return ok({ measureError: measured.error });
+  if ("error" in m) {
+    if (config.minBytesSaved === 0) return ok({ measureError: m.error });
     return skip(
       "measure-failed",
-      `the saving couldn't be measured (${measured.error}), so minBytesSaved (${threshold}) can't be checked; set minBytesSaved to 0 or pass --no-measure to split without an estimate`,
+      `the saving couldn't be measured (${m.error}), so minBytesSaved (${threshold}) can't be checked; set minBytesSaved to 0 or pass --no-measure to split without an estimate`,
     );
   }
-  const { bytesSaved } = measured;
-  if (bytesSaved.conservative < config.minBytesSaved) {
+  const { isolated, conservative } = m.bytesSaved;
+  if (conservative < config.minBytesSaved) {
     return skip(
       "below-threshold",
-      `saves an estimated ${formatBytes(bytesSaved.conservative)} gzip (minBytesSaved is ${threshold})`,
+      `saves an estimated ${formatBytes(conservative)} gzip (minBytesSaved is ${threshold})`,
     );
   }
-  return ok({ bytesSaved });
+  const sharedWith = m.sharedWith.map((f) => rel(root, f));
+  return ok({
+    bytesSaved: { isolated, conservative, ...(sharedWith.length > 0 ? { sharedWith } : {}) },
+  });
 }
 
 function specialApiSkip(ctx: AnalysisContext, facts: FileFacts): Skip | undefined {

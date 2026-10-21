@@ -1,6 +1,7 @@
 import { createRequire } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { lineEndingOf } from "./text.js";
 
 type PrettierApi = {
   resolveConfigFile(file: string): Promise<string | null>;
@@ -9,6 +10,7 @@ type PrettierApi = {
     options?: { config?: string },
   ): Promise<Record<string, unknown> | null>;
   format(source: string, options: Record<string, unknown>): Promise<string>;
+  check(source: string, options: Record<string, unknown>): Promise<boolean>;
 };
 
 const cache = new Map<string, Promise<PrettierApi | undefined>>();
@@ -35,20 +37,34 @@ function loadPrettier(root: string): Promise<PrettierApi | undefined> {
   return pending;
 }
 
+export type Formatter = (file: string, text: string) => Promise<string>;
+
 /**
- * Formats `text` as `file` with the project's Prettier config. Returns the text unchanged when the
- * project has no Prettier installed or no Prettier config applies to the file.
+ * A formatter for the files a split of `file` produces, using the project's Prettier config.
+ * Undefined when the project has no Prettier or no config applies to the file, and also when the
+ * original isn't already formatted with that config: formatting would then rewrite lines the split
+ * didn't touch. Line endings always follow the original (`endOfLine` is set from its first line).
  */
-export async function formatWithProjectPrettier(
+export async function projectFormatter(
   root: string,
   file: string,
-  text: string,
-): Promise<string> {
+  originalText: string,
+): Promise<Formatter | undefined> {
   const prettier = await loadPrettier(root);
-  if (!prettier) return text;
+  if (!prettier) return undefined;
   const configFile = await prettier.resolveConfigFile(file);
   // Only a config that belongs to this project counts (not one in a parent directory).
-  if (!configFile || path.relative(root, configFile).startsWith("..")) return text;
-  const options = (await prettier.resolveConfig(file, { config: configFile })) ?? {};
-  return prettier.format(text, { ...options, filepath: file });
+  if (!configFile || path.relative(root, configFile).startsWith("..")) return undefined;
+  const endOfLine = lineEndingOf(originalText) === "\r\n" ? "crlf" : "lf";
+  const optionsFor = async (target: string) => ({
+    ...((await prettier.resolveConfig(target, { config: configFile })) ?? {}),
+    endOfLine,
+    filepath: target,
+  });
+  try {
+    if (!(await prettier.check(originalText, await optionsFor(file)))) return undefined;
+  } catch {
+    return undefined; // Prettier can't parse it (syntax it doesn't support): leave it alone
+  }
+  return async (target, text) => prettier.format(text, await optionsFor(target));
 }

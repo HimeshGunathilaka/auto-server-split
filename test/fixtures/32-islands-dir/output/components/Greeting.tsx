@@ -7,7 +7,7 @@ export default function Greeting({ person }: { person: Person }) {
     <section>
       <h2>Hello</h2>
       <p>From {person.city}</p>
-      <GreetingButton person={person} />
+      <GreetingButton person={{ name: person.name }} />
     </section>
   );
 }

@@ -61,7 +61,8 @@ _to the server_ is risky. So everything the analysis can't prove server-safe is 
 client-only and ends up inside an island:
 
 - packages that depend on React, have no `"use client"` entry, and aren't on the built-in
-  server-safe list (`@heroicons/react`, `@radix-ui/react-icons`);
+  server-safe list (icon libraries such as `@heroicons/react` and `lucide-react`) or the
+  `serverSafePackages` config;
 - unresolvable imports;
 - project modules that aren't client-free all the way down. A module counts as client-free if
   neither it nor anything it imports (stopping at `"use client"` modules, which become client
@@ -90,11 +91,14 @@ Besides hooks, event props, the common browser globals and client-only packages:
 
 A component-local declaration that an island needs but that isn't serializable (a helper
 function, a class instance) is **copied** into the island instead of failing the split. It's
-removed from the server component when nothing there reads it any more. Module-level helper
-functions and non-serializable module constants are copied into the island file the same way.
-Serializable module constants become props. The copied code ran in the browser
-before, so this keeps the original behaviour. Component props (parameters) and `.map` callback
-variables are never copied; if they aren't serializable the file is skipped.
+removed from the server component when nothing there reads it any more. Module-level
+declarations (helpers and constants, serializable or not) are copied into the island file the same
+way, and so are body constants that don't depend on props or render-time values (`const perPage =
+6`). The copied code ran in the browser before, so this keeps the original behaviour. It also
+keeps hook dependency lists valid: a constant turned into a prop would become a dependency the
+`react-hooks/exhaustive-deps` lint rule asks for. Values computed from props stay on the server
+and cross as props. Component props (parameters) and `.map` callback variables are never copied;
+if they aren't serializable the file is skipped.
 
 ### Stricter candidate rules
 
@@ -111,7 +115,8 @@ variables are never copied; if they aren't serializable the file is skipped.
 - Importers must use the component only as `<X />` (or in types). Passing the component as a value
   is `unsupported-pattern`, because a Server Component function can't be passed to client code.
   Importers outside the TypeScript program (e.g. `.mdx`, or `.js` without `allowJs`) count as
-  unverifiable (`imported-by-client`); `import()` importers give `dynamic-import`.
+  unverifiable (`imported-by-client`); `import()` importers give `dynamic-import`. (Superseded in
+  1.0.1: they're checked syntactically, and an unverifiable one is `unsupported-pattern`.)
 - Next.js `error.tsx` / `global-error.tsx` must stay Client Components, so they're skipped.
 - Any `pages/` directory is treated as route territory for `would-create-route`.
 
@@ -131,7 +136,8 @@ without `verbatimModuleSyntax`.
   usage.
 - Quote style, semicolons and the indentation unit are copied from the original file.
 - Prettier runs only when `prettier: "auto"`, the project has Prettier installed, and a Prettier
-  config is found **inside the project root** (a config in a parent directory is ignored).
+  config is found **inside the project root** (a config in a parent directory is ignored). (1.0.1:
+  and only when the original file is already formatted with that config.)
 
 ### Self-check compares diagnostics by message, not position
 
@@ -334,6 +340,13 @@ the result carries `measureError` ("saving not measured" in the CLI). `--no-meas
 explicit opt-out. The measurer uses esbuild's synchronous API (no slower in practice) so the CLI
 and the ESLint rule share it.
 
+### Server Action modules are external when measuring
+
+A client file that imports a `"use server"` module gets a small server-reference stub in its
+bundle, not the module's code. The measurement marks those modules external (by resolved path, so
+aliases are covered) instead of following them into database drivers and Node built-ins, which
+esbuild can't bundle for the browser and which made every such file `measure-failed`.
+
 ### Line endings follow the original file
 
 The analysis reads CRLF and LF files the same way (every fixture gives the same result on a CRLF
@@ -344,7 +357,8 @@ the tool inserted. A file that already mixes CRLF and LF is left as it is rather
 since rewriting lines the split didn't touch would break the "untouched bytes stay" rule. This is
 safe for code: template literals and line continuations read CRLF and LF the same way, and JSX
 text treats both as a line break. When the project's Prettier formats the output, its `endOfLine`
-decides, as it would for `prettier --write`.
+decides, as it would for `prettier --write`. (Superseded in 1.0.1: Prettier is given the original's
+line ending, so the rule holds with Prettier too.)
 
 ts-morph's `replaceWithText` rewrites every line break as LF, so the self-check, which swaps the
 generated text in and back out, used to leave an LF copy of a CRLF original in memory; anything that
@@ -381,3 +395,105 @@ zero internal errors, zero new type errors, and every app that built before stil
 The next-learn dashboard needs a Postgres database at build time, so its build can't run here;
 the typecheck comparison covers it. These apps are already well-factored, so there are few splits;
 see `docs/benchmarks.md`.
+
+## 1.0.1 — fixes from an integration run
+
+These come from running 1.0.0 on a fixture app (44 `"use client"` components, five routes) and
+comparing the built app before and after: server HTML, client JavaScript per route, and the DOM
+after clicking every interactive element.
+
+### Size estimates are made for the whole set of splits
+
+The 1.0 estimate looked at one file at a time: code the file removed counted as saved only if no
+other client module imported it. Two components that shared a dependency (both used `date-fns`)
+each saw the other still shipping it, so each estimated about 0 B; at the default `minBytesSaved`
+neither was ever split, and running the tool again couldn't change that. The summary was also far
+too low: 190 B estimated where the built app saved 5.6 KB on one route and 18.8 KB on two others.
+
+The estimate now assumes every split the tool proposes for the project is applied:
+
+- The set is the run's own splits plus those of the other `"use client"` files in `include`
+  (analysed without the self-check). It doesn't depend on the paths a run covers, so a file gets
+  the same estimate in a one-file run, a folder run and the ESLint rule, and splitting folders one
+  at a time can't deadlock either.
+- "Still shipped" is worked out on the client graph as it would be after those splits: the split
+  files stop being client roots and their island files become roots (their imports are parsed from
+  the generated text).
+- A package's own dependencies keep shipping while that package does. esbuild's metafile says
+  which top-level packages pull each `node_modules` file into a bundle; 1.0 counted such a file as
+  removed even when another client module still imported the package that pulls it in.
+- Code that several splits remove together is divided between them, so the per-file estimates add
+  up to the project total instead of counting a shared package once per file. The result lists the
+  other splits (`bytesSaved.sharedWith`), and the CLI says the estimate assumes them.
+- Splits below `minBytesSaved` are dropped and the rest re-measured until nothing else drops: a
+  dropped split's original keeps its dependencies shipping, which can push another split below the
+  threshold. The set only shrinks, so this ends after at most one round per split. A dropped file's
+  message reports its saving measured against the final set.
+
+It stays conservative where it has to guess: the estimate is project-wide, not per route, so
+anything any remaining client module imports counts as shipped everywhere. On the fixture app the
+summary now says 5.7 KB, and the route that renders both shared components saves 5.6 KB.
+
+The ESLint rule uses the same set, worked out once per lint process. Its own `minStaticRatio` is now
+applied on top of the CLI's config rather than folded into it, so the rule's set of other splits
+is exactly the CLI's.
+
+### Importers outside the TypeScript project are checked without types
+
+A `.tsx` file the tsconfig excludes (tests, a backup copy of the source tree) is still part of the
+module graph, because it can import a component. 1.0 refused every such importer with the code
+`imported-by-client` ("imported by a client module"), although it usually wasn't one. In one run, a
+backup copy of the source tree blocked 27 of 35 candidates that way.
+
+Now the importer is parsed and checked syntactically: the bindings it imports from the component
+file (or from a barrel that re-exports it, followed by name) may only appear as JSX tags, in types
+or in re-exports. Without scope information any other identifier with the same name counts as a
+use, which can only make the check stricter. `require()` of the file, and `.mdx` importers, can't be
+verified and skip as `unsupported-pattern`. Only a real client importer gives `imported-by-client`.
+Such importers aren't added to the self-check's diagnostics comparison, since they have no
+diagnostics in the program.
+
+### Prettier only formats files that were already formatted
+
+With a Prettier config present, 1.0 ran Prettier over the whole rewritten file. That broke the
+"untouched bytes stay" rule (an untouched 105-character signature was rewrapped onto 9 lines) and,
+with Prettier's default `endOfLine: "lf"`, turned a CRLF file into LF.
+
+Prettier now runs only when the original is already formatted with the project's config (checked
+with `prettier.check`, line endings aside). Then the only lines that can change are the ones around
+the edits. The island file follows the same rule: its code comes from the original, so it keeps
+the original's formatting when the original wasn't formatted. `endOfLine` is always set to the
+original's line ending, so CRLF files stay CRLF with or without Prettier.
+
+### Islands get only the fields they read
+
+1.0 passed whole objects across the boundary: `<KeyedListLi r={r}>` serialized the row's `md`
+field although the island only read `r.id` and `r.title`. The Mongoose field-picking from 0.4 now
+applies to any plain object prop: when every reference in the island is a non-optional property
+read (`r.title`, not `r?.title`, `r["title"]`, a write or a use of `r` itself) and the island
+doesn't read every field anyway, the server passes `r={{ id: r.id, title: r.title }}` and the prop
+is typed `{ id: string; title: string }`. The island's code is unchanged. Arrays, `Date`, `Map`,
+class instances, index signatures and unions are passed whole.
+
+### Locale-dependent formatting stays in islands
+
+`toLocaleString()` in markup used to move to the server, where the locale and timezone are the
+server's rather than the user's. Before the split the component re-rendered in the browser, so the
+user saw their own locale. `toLocaleString()`, `toLocaleDateString()`, `toLocaleTimeString()`,
+`toLocaleUpperCase()`/`toLocaleLowerCase()`, `localeCompare()` and `Intl.*` are now client-only
+markers, like `Date.now()`, unless the call names its locale (and, for dates, a `timeZone`), which
+gives the same output everywhere. Library formatting the tool can't see into (`date-fns`' `format`)
+remains a documented risk.
+
+### Generated islands aren't scanned
+
+A second run listed every generated `X.client.tsx` as a skip (`fully-interactive`,
+`state-spans-component`), which buried the skips worth reading. Files whose name ends with
+`clientFileSuffix` are islands and are no longer scanned by the CLI, the API or the ESLint rule.
+
+### Smaller fixes
+
+- The API's `config` option is validated like a config file; unknown keys used to be ignored.
+- `--interactive` counted declined splits as split (`files split: 2 (1 written)`). The summary now
+  counts the applied ones and lists the rest as `files declined`.
+- A helper component moved whole into the island file keeps its own name; the README now says so.

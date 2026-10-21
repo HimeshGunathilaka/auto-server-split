@@ -158,6 +158,16 @@ describe("CLI", () => {
     expect(run(["PostCard.tsx", "--check"]).code).toBe(2);
   });
 
+  it("doesn't scan the island files it generated", () => {
+    freshCopy(false);
+    expect(run([".", "--write", "--allow-dirty", "--no-measure"]).code).toBe(0);
+    expect(existsSync(path.join(dir, "PostCard.client.tsx"))).toBe(true);
+    const again = run([".", "--no-measure"]);
+    expect(again.stdout).not.toContain("PostCard.client.tsx");
+    expect(again.stdout).toContain('files scanned:  2 (0 with "use client")');
+    expect(again.stdout).toContain("files skipped:  0");
+  });
+
   it("exits 1 for a path that does not exist", () => {
     freshCopy(false);
     expect(run(["nope.tsx"]).code).toBe(1);

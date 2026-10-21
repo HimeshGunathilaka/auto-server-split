@@ -153,7 +153,11 @@ export function emitSplit(input: EmitInput): Outcome<EmitOutput> {
   // ---- names ----------------------------------------------------------------------------------
   const taken = new Set<string>();
   for (const b of imports.bindings) taken.add(b.local);
-  for (const d of shape.moduleDecls) d.names.forEach((n) => taken.add(n));
+  // Types live in their own namespace: `interface ContactForm` doesn't clash with an island
+  // function (or its import) named `ContactForm`.
+  const typeNames = new Set<string>();
+  for (const d of shape.moduleDecls)
+    d.names.forEach((n) => (d.kind === "type" ? typeNames : taken).add(n));
   for (const c of shape.components) taken.add(c.name);
   const nameProblem = assignNames(plans, taken, input.renames ?? {});
   if (nameProblem) return skip("unsupported-pattern", nameProblem);
@@ -235,7 +239,7 @@ export function emitSplit(input: EmitInput): Outcome<EmitOutput> {
     } else if (namespace) {
       reactNodeType = `${namespace.local}.ReactNode`;
       collector.deps.imports.add(namespace);
-    } else if (taken.has("ReactNode")) {
+    } else if (taken.has("ReactNode") || typeNames.has("ReactNode")) {
       return skip(
         "unsupported-pattern",
         "`ReactNode` is already declared in this file, so slot props can't be typed",

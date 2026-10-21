@@ -1,7 +1,9 @@
 "use client";
 import { useState } from "react";
 
-export function ClapperButton({ LABEL, initial }) {
+const LABEL = "Claps";
+
+export function ClapperButton({ initial }) {
   const [claps, setClaps] = useState(initial);
   return (
     <button onClick={() => setClaps(claps + 1)}>

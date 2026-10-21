@@ -96,6 +96,92 @@ export default function Comp({ name }: { name: string }) {
 `);
     expect(f.islands).toEqual([expect.objectContaining({ rootTag: "p" })]);
   });
+
+  it("treats locale- and timezone-dependent formatting as client-only", async () => {
+    const f = await splitOne(`"use client";
+export default function Comp({ iso, n }: { iso: string; n: number }) {
+  return (
+    <div>
+      <h1>Dates</h1>
+      <p>{new Date(iso).toLocaleString()}</p>
+      <p>{new Date(iso).toLocaleDateString("en-US")}</p>
+      <p>{new Intl.NumberFormat().format(n)}</p>
+      <p>{["b", "a"].sort((x, y) => x.localeCompare(y)).join()}</p>
+    </div>
+  );
+}
+`);
+    expect(f.status).toBe("split");
+    expect(f.islands.map((i) => i.rootTag)).toEqual(["p", "p", "p", "p"]);
+  });
+
+  it("keeps formatting that names its locale (and timezone, for dates) on the server", async () => {
+    const f = await splitOne(`"use client";
+import { useState } from "react";
+export default function Comp({ iso, n }: { iso: string; n: number }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div>
+      <p>{n.toLocaleString("en-US")}</p>
+      <p>{new Date(iso).toLocaleDateString("en-US", { timeZone: "UTC" })}</p>
+      <p>{new Intl.DateTimeFormat(["en-GB"], { timeZone: "Europe/London" }).format(new Date(iso))}</p>
+      <button onClick={() => setOpen(!open)}>{open ? "-" : "+"}</button>
+    </div>
+  );
+}
+`);
+    expect(f.islands.map((i) => i.rootTag)).toEqual(["button"]);
+    expect(server(f)).toContain('n.toLocaleString("en-US")');
+  });
+});
+
+describe("object props", () => {
+  it("pass only the fields the island reads", async () => {
+    const f = await splitOne(`"use client";
+import { useState } from "react";
+type Row = { id: string; title: string; body: string };
+export default function Comp({ row }: { row: Row }) {
+  const [n, setN] = useState(0);
+  return (
+    <article>
+      <p>{row.body}</p>
+      <button data-id={row.id} onClick={() => setN(n + 1)}>{row.title} {n}</button>
+    </article>
+  );
+}
+`);
+    expect(server(f)).toContain("<CompButton row={{ id: row.id, title: row.title }} />");
+    expect(island(f)).toContain(
+      "export function CompButton({ row }: { row: { id: string; title: string } })",
+    );
+    expect(island(f)).toContain("{row.title} {n}");
+  });
+
+  it("pass the whole object when the island uses it as a whole", async () => {
+    for (const use of [
+      "{JSON.stringify(row)}",
+      "{row?.title}",
+      '{row["title"]}',
+      "{row.id}{row.title}{row.body}",
+    ]) {
+      const f = await splitOne(
+        `"use client";
+import { useState } from "react";
+type Row = { id: string; title: string; body: string };
+export default function Comp({ row }: { row: Row }) {
+  const [n, setN] = useState(0);
+  return (
+    <article>
+      <h1>Static</h1>
+      <button onClick={() => setN(n + 1)}>{n}{use}</button>
+    </article>
+  );
+}
+`.replace("{use}", use),
+      );
+      expect(server(f), use).toContain("<CompButton row={row} />");
+    }
+  });
 });
 
 describe("effects", () => {
@@ -449,5 +535,141 @@ export default function Comp() {
     );
     expect(server(f)).toContain('import "./styles.css";');
     expect(island(f)).not.toContain("styles.css");
+  });
+});
+
+describe("constants used by an island", () => {
+  it("copies body and module constants into the island instead of passing them as props", async () => {
+    const f = await splitOne(`"use client";
+import { useMemo, useState } from "react";
+
+const RANGES = [
+  { id: "week", label: "This week" },
+  { id: "month", label: "This month" },
+] as const;
+const INITIAL_FORM = { name: "", email: "" };
+
+export default function Comp({ items }: { items: string[] }) {
+  const perPage = 6;
+  const [page, setPage] = useState(1);
+  const [form, setForm] = useState(INITIAL_FORM);
+  const visible = useMemo(() => items.slice(0, page * perPage), [items, page]);
+  return (
+    <section>
+      <h2>Results</h2>
+      <div>
+        {RANGES.map((r) => <span key={r.id}>{r.label}</span>)}
+        <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+        <ul>{visible.map((v) => <li key={v}>{v}</li>)}</ul>
+        <button onClick={() => setPage(page + 1)}>More</button>
+      </div>
+    </section>
+  );
+}
+`);
+    expect(f.status).toBe("split");
+    expect(f.islands).toEqual([expect.objectContaining({ props: ["items"] })]);
+    expect(island(f)).toContain("const perPage = 6;");
+    expect(island(f)).toContain("const RANGES = [");
+    expect(island(f)).toContain('const INITIAL_FORM = { name: "", email: "" };');
+    expect(server(f)).not.toMatch(/perPage|RANGES|INITIAL_FORM/);
+  });
+
+  it("still passes a body value computed from props", async () => {
+    const f = await splitOne(`"use client";
+import { useState } from "react";
+export default function Comp({ items }: { items: string[] }) {
+  const count = items.length;
+  const label = "Count";
+  const [open, setOpen] = useState(false);
+  return (
+    <div>
+      <h2>List</h2>
+      <button onClick={() => setOpen(!open)}>{open ? \`\${label}: \${count}\` : "?"}</button>
+    </div>
+  );
+}
+`);
+    expect(f.islands).toEqual([expect.objectContaining({ props: ["count"] })]);
+    expect(island(f)).toContain('const label = "Count";');
+  });
+});
+
+describe("island names", () => {
+  it("may reuse the name of a type declared in the file", async () => {
+    const f = await splitOne(`"use client";
+import { useState } from "react";
+
+interface CompForm {
+  name: string;
+}
+
+export default function Comp() {
+  const [form, setForm] = useState<CompForm>({ name: "" });
+  return (
+    <section>
+      <h2>Contact</h2>
+      <form onSubmit={() => setForm({ name: "" })}>
+        <input value={form.name} onChange={(e) => setForm({ name: e.target.value })} />
+      </form>
+    </section>
+  );
+}
+`);
+    expect(f.status).toBe("split");
+    expect(f.islands.map((i) => i.name)).toEqual(["CompForm"]);
+  });
+});
+
+describe("skip messages", () => {
+  it("name the import that makes an element client-only", async () => {
+    const f = await splitOne(
+      `"use client";
+import { cn } from "./utils";
+export default function Comp({ title }: { title: string }) {
+  return (
+    <div className={cn("a", "b")}>
+      <h2 className={cn("c")}>{title}</h2>
+    </div>
+  );
+}
+`,
+      {
+        "utils.ts": `export function cn(...c: string[]) { return c.join(" "); }
+export function uid() { return Math.random().toString(36); }
+`,
+      },
+    );
+    expect(f.skipped?.code).toBe("state-spans-component");
+    expect(f.skipped?.message).toContain("<div>, <h2>: cn from ./utils is client-only");
+    expect(f.skipped?.message).toContain("utils.ts:2");
+  });
+
+  it("describe an unconnected effect the same way whether or not there are islands", async () => {
+    const effectOnly = await splitOne(`"use client";
+import { useEffect } from "react";
+import { usePathname } from "next/navigation";
+export default function Comp({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname();
+  useEffect(() => { window.scrollTo(0, 0); }, [pathname]);
+  return <main><h1>Site</h1>{children}</main>;
+}
+`);
+    const withIsland = await splitOne(`"use client";
+import { useEffect, useState } from "react";
+import { usePathname } from "next/navigation";
+export default function Comp({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname();
+  const [open, setOpen] = useState(false);
+  useEffect(() => { window.scrollTo(0, 0); }, [pathname]);
+  return <main><h1>Site</h1><button onClick={() => setOpen(!open)}>menu</button>{children}</main>;
+}
+`);
+    for (const f of [effectOnly, withIsland]) {
+      expect(f.skipped?.code).toBe("unsupported-pattern");
+      expect(f.skipped?.message).toMatch(
+        /^client-only code at line 5 isn't connected to any rendered element; moving it would change when it runs$/,
+      );
+    }
   });
 });

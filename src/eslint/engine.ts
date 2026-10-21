@@ -1,11 +1,18 @@
 import { existsSync, realpathSync } from "node:fs";
 import path from "node:path";
 import type { Outcome } from "../analysis/skip.js";
+import { skip } from "../analysis/skip.js";
 import { findConfigFile, loadConfigFileSync, resolveConfig } from "../config/config.js";
 import { BundleMeasurer } from "../measure/bundleSize.js";
 import { ensureLoaded, setSourceText } from "../project/loadProject.js";
 import type { Analyzed, RunContext } from "../split.js";
-import { analyzeFile, checkAnalyzed, createRunContext, measureAnalyzed } from "../split.js";
+import {
+  analyzeFile,
+  checkAnalyzed,
+  createRunContext,
+  estimateSavings,
+  isIslandFile,
+} from "../split.js";
 import type { UserConfig } from "../types.js";
 
 type LintOptions = {
@@ -20,7 +27,7 @@ type LintOptions = {
 /** The rule's own default: lint reports clear wins only. The config's threshold always applies too. */
 const DEFAULT_MIN_STATIC_RATIO = 0.5;
 
-/** One cached run per tsconfig, mode and threshold, for the lifetime of the lint process. */
+/** One cached run per tsconfig and mode, for the lifetime of the lint process. */
 const runs = new Map<string, RunContext>();
 /** The project's auto-split config, read once per project root. */
 const configs = new Map<string, UserConfig | undefined>();
@@ -79,23 +86,28 @@ export function analyzeForLint(args: {
   const tsconfig = realpathSync(found);
   const file = realpathSync(args.file);
   const root = path.dirname(tsconfig);
-  const fileConfig = projectConfig(root);
+  // The run uses the CLI's own config, so its size estimate assumes the same splits the CLI's does.
+  const config = resolveConfig(projectConfig(root), { prettier: false });
   // The rule option can raise the bar, never lower it below what the CLI applies.
   const minStaticRatio = Math.max(
     args.options.minStaticRatio ?? DEFAULT_MIN_STATIC_RATIO,
-    resolveConfig(fileConfig).minStaticRatio,
+    config.minStaticRatio,
   );
-  const key = `${args.typed ? "typed" : "lazy"}\0${tsconfig}\0${minStaticRatio}`;
+  const key = `${args.typed ? "typed" : "lazy"}\0${tsconfig}`;
   let run = runs.get(key);
   if (!run) {
-    const config = resolveConfig(fileConfig, { minStaticRatio, prettier: false });
     run = createRunContext(root, config, { lazy: !args.typed, tsconfig });
     runs.set(key, run);
   }
   const node = run.graph.nodes.get(file);
   if (!node?.inProgram) return undefined; // not covered by the tsconfig: importers can't be verified
+  if (isIslandFile(file, run.config)) return undefined; // the CLI never splits an island file
 
-  if (!args.typed) ensureLoaded(run.loaded, [file, ...importerClosure(run, file)]);
+  const context = run;
+  const load = (f: string) => {
+    if (!args.typed) ensureLoaded(context.loaded, [f, ...importerClosure(context, f)]);
+  };
+  load(file);
   const sf = run.loaded.project.getSourceFile(file);
   if (!sf) return undefined;
   // Analyse what the editor/CLI is linting, not what's on disk.
@@ -103,13 +115,22 @@ export function analyzeForLint(args: {
 
   const analyzed = analyzeFile(run, file);
   if (!analyzed.ok) return analyzed;
+  if (analyzed.value.staticRatio < minStaticRatio) {
+    return skip(
+      "below-threshold",
+      `only ${Math.round(analyzed.value.staticRatio * 100)}% of the JSX would stay on the server (the rule's minStaticRatio is ${Math.round(minStaticRatio * 100)}%)`,
+    );
+  }
   if (args.options.selfCheck !== false) {
     const checked = checkAnalyzed(run, analyzed.value);
     if (!checked.ok) return checked;
   }
   if (args.options.measure !== false) {
     run.measurer ??= new BundleMeasurer(root, run.graph, run.loaded.configFile);
-    const saving = measureAnalyzed(run, analyzed.value);
+    // Computed once per lint process: the splits the CLI would propose for the whole project.
+    run.estimate ??= estimateSavings(run, [], new Set(), load);
+    const { originalText, islandFile, islandText } = analyzed.value;
+    const saving = run.estimate.outcome({ file, originalText, islandFile, islandText });
     if (!saving.ok) return saving;
   }
   return analyzed;

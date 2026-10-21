@@ -1,8 +1,6 @@
 "use client";
 import { useState } from "react";
 
-type Comment = { id: string; author: string; text: string };
-
 function Avatar({ name }: { name: string }) {
   return <span className="avatar">{name.slice(0, 1)}</span>;
 }
@@ -12,7 +10,7 @@ export function LikeButton({ initial }: { initial: number }) {
   return <button onClick={() => setN(n + 1)}>♥ {n}</button>;
 }
 
-export function CommentItemDiv({ comment }: { comment: Comment }) {
+export function CommentItemDiv({ comment }: { comment: { author: string; text: string } }) {
   const [expanded, setExpanded] = useState(false);
   return (
     <div>

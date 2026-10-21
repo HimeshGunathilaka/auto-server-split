@@ -18,8 +18,13 @@ export type FileResult = {
   islands: IslandInfo[];
   /** Share of JSX nodes that end up outside islands, 0..1. */
   staticRatio: number;
-  /** Gzip bytes saved; `conservative` is the headline "estimated" number. */
-  bytesSaved?: { isolated: number; conservative: number };
+  /**
+   * Gzip bytes saved; `conservative` is the headline "estimated" number. It assumes the other
+   * splits the tool proposes for the project are applied too. `sharedWith` lists the ones that
+   * remove some of the same code (each such dependency is counted once, divided between them), so
+   * this saving depends on applying them as well.
+   */
+  bytesSaved?: { isolated: number; conservative: number; sharedWith?: string[] };
   /**
    * Why `bytesSaved` is missing although measurement was on (esbuild couldn't bundle a file). Only
    * splits with `minBytesSaved: 0` get here; otherwise the file is skipped as `measure-failed`.
@@ -39,6 +44,7 @@ export type UserConfig = {
   include?: string[];
   exclude?: string[];
   clientOnlyPackages?: string[];
+  serverSafePackages?: string[];
   serverSafeHooks?: string[];
   clientFileSuffix?: string;
   islandsDir?: string;
@@ -52,6 +58,7 @@ export type ResolvedConfig = {
   include: string[];
   exclude: string[];
   clientOnlyPackages: string[];
+  serverSafePackages: string[];
   serverSafeHooks: string[];
   clientFileSuffix: string;
   islandsDir: string | undefined;

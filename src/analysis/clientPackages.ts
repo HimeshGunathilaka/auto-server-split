@@ -120,9 +120,15 @@ export const CSS_IN_JS_PACKAGES = [
 /**
  * React-dependent packages verified to render correctly as Server Components (pure function
  * components, no context, state or effects). Everything else that depends on React and has no
- * "use client" entry is treated as client-only.
+ * "use client" entry is treated as client-only. An entry point that starts with "use client" is
+ * still a client reference (`lucide-react/dynamic`).
  */
-export const BUILTIN_SERVER_SAFE_PACKAGES = ["@heroicons/react", "@radix-ui/react-icons"];
+export const BUILTIN_SERVER_SAFE_PACKAGES = [
+  "@heroicons/react",
+  "@radix-ui/react-icons",
+  "@tabler/icons-react",
+  "lucide-react",
+];
 
 export function packageNameOf(specifier: string): string {
   const parts = specifier.split("/");

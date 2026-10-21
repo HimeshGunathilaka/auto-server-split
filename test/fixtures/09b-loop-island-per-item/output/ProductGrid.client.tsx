@@ -1,8 +1,6 @@
 "use client";
 
-type Product = { id: string; name: string; price: number; blurb: string };
-
-export function ProductGridArticle({ product }: { product: Product }) {
+export function ProductGridArticle({ product }: { product: { name: string; price: number; blurb: string } }) {
   return (
     <article>
       <h3>{product.name}</h3>
