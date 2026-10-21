@@ -2,6 +2,57 @@
 
 All notable changes to this project are documented here. The project follows [Semantic Versioning](https://semver.org/).
 
+## 1.0.1 — fixes from an integration run
+
+- Size estimates are made for the whole set of splits. A file's estimate assumes the other splits
+  the tool proposes for the project are applied too (this run's and those of the other
+  `"use client"` files in `include`), so it no longer depends on which paths a run covers. Code
+  that several splits remove together is divided between them instead of counting as still
+  shipped, so two components that share a dependency no longer block each other at the default
+  `minBytesSaved`, and the summary's total matches what the app saves (5.7 KB estimated, 5.6 KB
+  measured on the integration app, where 1.0.0 said 190 B). `bytesSaved.sharedWith` lists the
+  splits an estimate depends on, and the CLI names them. Splits below `minBytesSaved` are dropped
+  until the rest still pass without them.
+- A package's own dependencies count as shipping while another client module imports that package
+  (1.0.0 counted them as saved).
+- Importers outside the TypeScript project (files the tsconfig excludes, `.js` without `allowJs`)
+  are checked syntactically instead of blocking the split. Rendering the component as `<X />` is
+  fine; an importer whose usage can't be verified (`.mdx`, `require()`, a value use) skips as
+  `unsupported-pattern`. `imported-by-client` now only means a client module imports the file.
+- Prettier only formats the output when the original file is already formatted with the project's
+  config, so lines the split doesn't touch keep every byte. Line endings follow the original with or
+  without Prettier (a CRLF file used to become LF under Prettier's default `endOfLine: "lf"`).
+- Islands receive only the fields they read from a plain object prop:
+  `<KeyedListLi r={{ id: r.id, title: r.title }}>` instead of the whole row.
+- Locale-dependent formatting (`toLocaleString()`, `toLocaleDateString()`, `Intl.*`,
+  `localeCompare()`…) stays in islands unless the call names its locale (and, for dates, a
+  `timeZone`).
+- Generated island files (`X.client.tsx`) aren't scanned, so a second run no longer lists them as
+  skips. The ESLint rule doesn't report them either.
+- The API's `config` option is validated like a config file: unknown keys and invalid values reject
+  with a `ConfigError`.
+- `--interactive` counts only the accepted splits as split, and lists the rest as `files declined`.
+- README: a helper component moved whole into the island file keeps its own name.
+- Size measurement no longer follows imports of `"use server"` modules. In the client bundle
+  they're server-reference stubs, but esbuild bundled the server code behind them (for example a
+  Postgres driver) and failed with `Could not resolve "net"`, so every component that imports a
+  Server Action was skipped as `measure-failed` under the default `minBytesSaved`.
+- New option `serverSafePackages`: React packages to treat as server-safe (it also overrides the
+  built-in client-only list). `lucide-react` and `@tabler/icons-react` join the built-in
+  server-safe list. A `"use client"` entry point of a server-safe package (`lucide-react/dynamic`)
+  is still a client reference.
+- Constants an island uses are copied into the island file instead of being passed as props:
+  module-level constants, and body constants that don't depend on props (`const perPage = 6`).
+  As props they showed up as `INITIAL_FORM={INITIAL_FORM}` and as new
+  `react-hooks/exhaustive-deps` warnings inside the island.
+- `state-spans-component` messages say what made each element client-only (for example
+  `<div>, <h2>: cn from @/lib/utils is client-only (src/lib/utils.ts:112 uses Math.random())`)
+  instead of only listing the elements, and say "client-only code" rather than "client state".
+- Client-only code that no rendered element uses gets the same message whether or not the
+  component has other islands.
+- Island names no longer get a number because a type in the file has the same name
+  (`interface ContactForm` no longer turns the island into `ContactForm2`).
+
 ## 1.0.0 — interactive mode, docs, benchmarks
 
 - `--interactive`: `[y]es / [n]o / [r]ename islands / [d]iff / [q]uit`; renames re-run the engine
@@ -39,25 +90,6 @@ All notable changes to this project are documented here. The project follows [Se
   the original's line ending. They used to come out LF, and an interactive rename turned the whole
   rewritten file LF (ts-morph's `replaceWithText` rewrites line breaks; the self-check now sets
   file text byte for byte).
-- Size measurement no longer follows imports of `"use server"` modules. In the client bundle
-  they're server-reference stubs, but esbuild bundled the server code behind them (for example a
-  Postgres driver) and failed with `Could not resolve "net"`, so every component that imports a
-  Server Action was skipped as `measure-failed` under the default `minBytesSaved`.
-- New option `serverSafePackages`: React packages to treat as server-safe (it also overrides the
-  built-in client-only list). `lucide-react` and `@tabler/icons-react` join the built-in
-  server-safe list. A `"use client"` entry point of a server-safe package (`lucide-react/dynamic`)
-  is still a client reference.
-- Constants an island uses are copied into the island file instead of being passed as props:
-  module-level constants, and body constants that don't depend on props (`const perPage = 6`).
-  As props they showed up as `INITIAL_FORM={INITIAL_FORM}` and as new
-  `react-hooks/exhaustive-deps` warnings inside the island.
-- `state-spans-component` messages say what made each element client-only (for example
-  `<div>, <h2>: cn from @/lib/utils is client-only (src/lib/utils.ts:112 uses Math.random())`)
-  instead of only listing the elements, and say "client-only code" rather than "client state".
-- Client-only code that no rendered element uses gets the same message whether or not the
-  component has other islands.
-- Island names no longer get a number because a type in the file has the same name
-  (`interface ContactForm` no longer turns the island into `ContactForm2`).
 - Repository housekeeping: author and license holder set to Himesh Gunathilake; fixtures moved to
   `test/fixtures/`; `CONTRIBUTING.md`, `.editorconfig`, `.nvmrc`; `format`/`format:check` scripts
   (checked in CI); `noUnusedLocals`/`noUnusedParameters`; unused exports and dead helpers removed.

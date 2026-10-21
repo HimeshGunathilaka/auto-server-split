@@ -2,6 +2,8 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ConfigError, loadConfigFile, loadConfigFileSync } from "../src/config/config.js";
+import { split } from "../src/index.js";
+import type { UserConfig } from "../src/types.js";
 
 const TMP = path.resolve(import.meta.dirname, ".tmp");
 let dir = "";
@@ -132,5 +134,19 @@ export default { ...${body}, include: [format(new Date(0), "'src'") + "/**"] };
     );
     expect(await loadConfigFile(file)).toEqual(FULL);
     expect(() => loadConfigFileSync(file)).toThrow(/couldn't be loaded synchronously for ESLint/);
+  });
+});
+
+describe("split() config option", () => {
+  it("is validated like a config file: unknown keys and bad values are errors", async () => {
+    const root = project({ "Comp.tsx": "export const x = 1;\n" });
+    const call = (config: Record<string, unknown>) =>
+      split({ root, noConfigFile: true, measure: false, config: config as UserConfig });
+    await expect(call({ notARealOption: 1 })).rejects.toThrow(ConfigError);
+    await expect(call({ notARealOption: 1 })).rejects.toThrow('unknown key "notARealOption"');
+    await expect(call({ minBytesSaved: -1 })).rejects.toThrow(
+      '"minBytesSaved" must be a non-negative number',
+    );
+    await expect(call({ minBytesSaved: 0 })).resolves.toEqual({ files: [] });
   });
 });

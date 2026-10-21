@@ -9,7 +9,7 @@ export default function ProductGrid({ heading, products }: { heading: string; pr
       <p>Hand-picked for you.</p>
       <div className="grid">
         {products.map((product) => (
-          <ProductGridArticle key={product.id} product={product} />
+          <ProductGridArticle key={product.id} product={{ name: product.name, price: product.price, blurb: product.blurb }} />
         ))}
       </div>
     </section>

@@ -9,7 +9,7 @@ export default function LikeCard({ post, count }: { post: Post; count: number })
       <p>{post.excerpt}</p>
       <footer>
         <span>Post {post.id}</span>
-        <LikeCardButton post={post} count={count} />
+        <LikeCardButton post={{ id: post.id }} count={count} />
       </footer>
     </article>
   );

@@ -4,10 +4,10 @@ import { existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { defineCommand, runMain } from "citty";
 import pc from "picocolors";
-import { SKIP_TITLES } from "./analysis/skip.js";
 import { ConfigError } from "./config/config.js";
 import { formatBytes, runSplit } from "./split.js";
-import type { FileResult, SkipCode } from "./types.js";
+import { summaryLines } from "./summary.js";
+import type { FileResult } from "./types.js";
 
 declare const __VERSION__: string;
 
@@ -33,8 +33,15 @@ function describeSplit(file: FileResult): string {
   const islands = file.islands.map(
     (i) => `${i.name} <${i.rootTag}>${i.props.length ? ` (props: ${i.props.join(", ")})` : ""}`,
   );
+  const shared = file.bytesSaved?.sharedWith ?? [];
+  const assumes =
+    shared.length === 0
+      ? ""
+      : shared.length <= 2
+        ? `; assumes ${shared.join(" and ")} ${shared.length === 1 ? "is" : "are"} split too`
+        : `; assumes ${shared.length} other files are split too`;
   const saved = file.bytesSaved
-    ? ` · ~${formatBytes(file.bytesSaved.conservative)} gzip saved (estimated)`
+    ? ` · ~${formatBytes(file.bytesSaved.conservative)} gzip saved (estimated${assumes})`
     : file.measureError
       ? ` · ${pc.yellow("saving not measured")} (${file.measureError})`
       : "";
@@ -194,6 +201,8 @@ const main = defineCommand({
 
     let files = report.files;
     let toWrite = args.write ? files.filter((f) => f.status === "split") : [];
+    // Interactive mode: proposed splits that weren't accepted (rejected, or left by [q]uit).
+    let declined = 0;
     if (args.interactive) {
       const { reviewInteractively } = await import("./interactive.js");
       toWrite = await reviewInteractively(files, report.rerun, {
@@ -203,10 +212,11 @@ const main = defineCommand({
         describe: describeSplit,
       });
       const acceptedByFile = new Map(toWrite.map((f) => [f.file, f]));
+      declined = files.filter((f) => f.status === "split" && !acceptedByFile.has(f.file)).length;
       files = files.map((f) => acceptedByFile.get(f.file) ?? f);
     }
 
-    const splits = files.filter((f) => f.status === "split");
+    const splits = args.interactive ? toWrite : files.filter((f) => f.status === "split");
     if (toWrite.length > 0) {
       const touched = toWrite.flatMap((f) => Object.keys(f.outputs));
       if (!args["allow-dirty"]) {
@@ -245,33 +255,15 @@ const main = defineCommand({
     if (json) {
       console.log(JSON.stringify({ files }, null, 2));
     } else {
-      const skipped = files.filter((f) => f.status === "skipped");
-      const byCode = new Map<SkipCode, number>();
-      for (const f of skipped)
-        if (f.skipped) byCode.set(f.skipped.code, (byCode.get(f.skipped.code) ?? 0) + 1);
-      const saved = splits.reduce((n, f) => n + (f.bytesSaved?.conservative ?? 0), 0);
-      log();
-      log(pc.bold("Summary"));
-      log(`  files scanned:  ${report.filesScanned} (${files.length} with "use client")`);
-      const written = Boolean(args.write || args.interactive);
-      const writeNote = written
-        ? ` (${toWrite.length} written)`
-        : args.check
-          ? ""
-          : " (dry run, nothing written)";
-      log(`  files split:    ${splits.length}${writeNote}`);
-      log(`  files skipped:  ${skipped.length}`);
-      for (const [code, count] of [...byCode].sort((a, b) => b[1] - a[1])) {
-        log(`    ${String(count).padStart(3)}  ${code.padEnd(30)} ${pc.dim(SKIP_TITLES[code])}`);
-      }
-      const unmeasured = splits.filter((f) => f.measureError).length;
-      const unmeasuredNote =
-        unmeasured > 0 ? ` (${unmeasured} split${unmeasured === 1 ? "" : "s"} not measured)` : "";
-      if (report.files.some((f) => f.bytesSaved))
-        log(`  estimated saving: ${formatBytes(saved)} gzip of client JavaScript${unmeasuredNote}`);
-      else if (unmeasured > 0) log(`  estimated saving: unknown${unmeasuredNote}`);
-      if (!written && !args.check && splits.length > 0)
-        log(pc.dim("\nRun again with --write to apply."));
+      const mode = args.interactive
+        ? "interactive"
+        : args.write
+          ? "write"
+          : args.check
+            ? "check"
+            : "dry-run";
+      const filesScanned = report.filesScanned;
+      for (const line of summaryLines({ files, filesScanned, mode, splits, declined })) log(line);
     }
 
     if (files.some((f) => f.skipped?.code === "internal-error")) process.exitCode = EXIT_ERROR;

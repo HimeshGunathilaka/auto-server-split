@@ -173,7 +173,7 @@ export class FileFacts {
       if (ts.isCallExpression(n) && this.isHookCall(n)) {
         markers.push({ kind: "hook", node: n, detail: `${calleeName(n) ?? "hook"}()` });
       }
-      const nondeterministic = nondeterministicCall(n);
+      const nondeterministic = nondeterministicCall(n) ?? this.localeDependentCall(n);
       if (nondeterministic)
         markers.push({ kind: "nondeterministic", node: n, detail: nondeterministic });
       ts.forEachChild(n, visit);
@@ -205,6 +205,56 @@ export class FileFacts {
     );
     return markers;
   }
+
+  /**
+   * Formatting that depends on the runtime's locale or timezone, which differ between the server
+   * and the user's browser: `toLocaleString()` and friends, `localeCompare()`, `Intl.*`. A call
+   * that names its locale (and, for dates, its `timeZone`) gives the same result everywhere.
+   */
+  private localeDependentCall(n: ts.Node): string | undefined {
+    if (!ts.isCallExpression(n) && !ts.isNewExpression(n)) return undefined;
+    const callee = n.expression;
+    if (!ts.isPropertyAccessExpression(callee)) return undefined;
+    const method = callee.name.text;
+    const args = n.arguments ?? [];
+    if (ts.isIdentifier(callee.expression) && callee.expression.text === "Intl") {
+      const pinned = namesLocale(args[0]) && (method !== "DateTimeFormat" || setsTimeZone(args[1]));
+      return pinned ? undefined : `Intl.${method}`;
+    }
+    if (!ts.isCallExpression(n)) return undefined;
+    if (method === "localeCompare") return namesLocale(args[1]) ? undefined : `${method}()`;
+    if (method === "toLocaleUpperCase" || method === "toLocaleLowerCase")
+      return namesLocale(args[0]) ? undefined : `${method}()`;
+    if (!/^toLocale(?:Date|Time)?String$/.test(method)) return undefined;
+    const receiver = this.checker.getTypeAtLocation(callee.expression);
+    const isNumber = (receiver.flags & (ts.TypeFlags.NumberLike | ts.TypeFlags.BigIntLike)) !== 0;
+    const pinned = namesLocale(args[0]) && (isNumber || setsTimeZone(args[1]));
+    return pinned ? undefined : `${method}()`;
+  }
+}
+
+/** A locale given as a string literal (or a list of them), not left to the runtime default. */
+function namesLocale(arg: ts.Expression | undefined): boolean {
+  if (!arg) return false;
+  if (ts.isStringLiteralLike(arg)) return true;
+  return (
+    ts.isArrayLiteralExpression(arg) &&
+    arg.elements.length > 0 &&
+    arg.elements.every((e) => ts.isStringLiteralLike(e))
+  );
+}
+
+/** An options object literal with an explicit `timeZone`. */
+function setsTimeZone(arg: ts.Expression | undefined): boolean {
+  return (
+    arg !== undefined &&
+    ts.isObjectLiteralExpression(arg) &&
+    arg.properties.some(
+      (p) =>
+        (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) &&
+        p.name.getText() === "timeZone",
+    )
+  );
 }
 
 /** Calls whose result differs between the server render and the browser render. */

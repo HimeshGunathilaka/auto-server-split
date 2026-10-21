@@ -96,6 +96,92 @@ export default function Comp({ name }: { name: string }) {
 `);
     expect(f.islands).toEqual([expect.objectContaining({ rootTag: "p" })]);
   });
+
+  it("treats locale- and timezone-dependent formatting as client-only", async () => {
+    const f = await splitOne(`"use client";
+export default function Comp({ iso, n }: { iso: string; n: number }) {
+  return (
+    <div>
+      <h1>Dates</h1>
+      <p>{new Date(iso).toLocaleString()}</p>
+      <p>{new Date(iso).toLocaleDateString("en-US")}</p>
+      <p>{new Intl.NumberFormat().format(n)}</p>
+      <p>{["b", "a"].sort((x, y) => x.localeCompare(y)).join()}</p>
+    </div>
+  );
+}
+`);
+    expect(f.status).toBe("split");
+    expect(f.islands.map((i) => i.rootTag)).toEqual(["p", "p", "p", "p"]);
+  });
+
+  it("keeps formatting that names its locale (and timezone, for dates) on the server", async () => {
+    const f = await splitOne(`"use client";
+import { useState } from "react";
+export default function Comp({ iso, n }: { iso: string; n: number }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div>
+      <p>{n.toLocaleString("en-US")}</p>
+      <p>{new Date(iso).toLocaleDateString("en-US", { timeZone: "UTC" })}</p>
+      <p>{new Intl.DateTimeFormat(["en-GB"], { timeZone: "Europe/London" }).format(new Date(iso))}</p>
+      <button onClick={() => setOpen(!open)}>{open ? "-" : "+"}</button>
+    </div>
+  );
+}
+`);
+    expect(f.islands.map((i) => i.rootTag)).toEqual(["button"]);
+    expect(server(f)).toContain('n.toLocaleString("en-US")');
+  });
+});
+
+describe("object props", () => {
+  it("pass only the fields the island reads", async () => {
+    const f = await splitOne(`"use client";
+import { useState } from "react";
+type Row = { id: string; title: string; body: string };
+export default function Comp({ row }: { row: Row }) {
+  const [n, setN] = useState(0);
+  return (
+    <article>
+      <p>{row.body}</p>
+      <button data-id={row.id} onClick={() => setN(n + 1)}>{row.title} {n}</button>
+    </article>
+  );
+}
+`);
+    expect(server(f)).toContain("<CompButton row={{ id: row.id, title: row.title }} />");
+    expect(island(f)).toContain(
+      "export function CompButton({ row }: { row: { id: string; title: string } })",
+    );
+    expect(island(f)).toContain("{row.title} {n}");
+  });
+
+  it("pass the whole object when the island uses it as a whole", async () => {
+    for (const use of [
+      "{JSON.stringify(row)}",
+      "{row?.title}",
+      '{row["title"]}',
+      "{row.id}{row.title}{row.body}",
+    ]) {
+      const f = await splitOne(
+        `"use client";
+import { useState } from "react";
+type Row = { id: string; title: string; body: string };
+export default function Comp({ row }: { row: Row }) {
+  const [n, setN] = useState(0);
+  return (
+    <article>
+      <h1>Static</h1>
+      <button onClick={() => setN(n + 1)}>{n}{use}</button>
+    </article>
+  );
+}
+`.replace("{use}", use),
+      );
+      expect(server(f), use).toContain("<CompButton row={row} />");
+    }
+  });
 });
 
 describe("effects", () => {

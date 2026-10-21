@@ -186,6 +186,15 @@ const SCENARIOS: Scenario[] = [
     ],
   },
   {
+    // Each one alone would leave date-fns and marked shipping with the other.
+    name: "two components that share their packages, at the default thresholds",
+    files: {
+      "components/PostCard2.tsx": POST_CARD.replaceAll("PostCard", "PostCard2"),
+      "app/page.tsx": `import PostCard2 from "../components/PostCard2";\n${PAGE.replace("<main>", '<main>\n      <PostCard2 post={{ title: "t", date: "2026-01-01", body: "b" }} />')}`,
+    },
+    expectSplit: ["components/PostCard.tsx", "components/PostCard2.tsx"],
+  },
+  {
     name: "js config with a clientFileSuffix whose output already exists",
     files: {
       "auto-split.config.js": `export default { clientFileSuffix: ".island", minBytesSaved: 0 };\n`,

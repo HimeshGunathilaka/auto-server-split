@@ -9,10 +9,28 @@ import type { ModuleGraph } from "../project/moduleGraph.js";
 
 type BytesSaved = { isolated: number; conservative: number };
 
-/** The saving, or why it couldn't be measured (esbuild couldn't bundle one of the files). */
-export type Measurement = { bytesSaved: BytesSaved } | { error: string };
+/** A file a run would split, as the estimate sees it: its text before and its island's text after. */
+export type SplitCandidate = {
+  file: string;
+  originalText: string;
+  islandFile: string;
+  islandText: string;
+};
 
-type BundleStats = { gzip: number; minified: number; inputs: Map<string, number> };
+/**
+ * The saving, or why it couldn't be measured (esbuild couldn't bundle one of the files).
+ * `sharedWith` lists the other candidates that remove some of the same code from the client.
+ */
+export type Measurement = { bytesSaved: BytesSaved; sharedWith: string[] } | { error: string };
+
+type BundleStats = {
+  gzip: number;
+  minified: number;
+  /** Minified bytes each input contributes. */
+  inputs: Map<string, number>;
+  /** Package files -> the packages imported by project code that pull them in. */
+  pulledInBy: Map<string, Set<string>>;
+};
 
 /** Bundles kept per run; an editor's ESLint process measures every edit, so this is bounded. */
 const CACHE_LIMIT = 500;
@@ -51,9 +69,9 @@ const EMPTY_LOADERS = [
 ];
 
 /**
- * Estimates the client JavaScript saved by a split: bundle the original client file and
- * the generated island file with esbuild (react, react-dom, next and `"use server"` modules
- * external), and compare gzip sizes.
+ * Estimates the client JavaScript saved by splits: bundle each original client file and its
+ * generated island file with esbuild (react, react-dom, next and `"use server"` modules external),
+ * and compare gzip sizes.
  * Synchronous, so the CLI and the ESLint rule (which can't await) share it.
  */
 export class BundleMeasurer {
@@ -118,6 +136,7 @@ export class BundleMeasurer {
             gzip: gzipSync(output.contents).length,
             minified: output.contents.length,
             inputs: inputBytes(result.metafile),
+            pulledInBy: packageOwners(result.metafile),
           }
         : { error: "esbuild produced no output" };
     } catch (error) {
@@ -129,26 +148,73 @@ export class BundleMeasurer {
   }
 
   /**
-   * `isolated` = before − after. `conservative` also leaves out code that other client modules still
-   * import (it ships anyway); gzip is apportioned by each input's share of the minified output.
+   * Estimates each candidate's saving, assuming every candidate in the list is split.
+   * `isolated` = before − after. `conservative` also leaves out code that still ships after all of
+   * these splits (some other client module imports it), and divides code that several of the
+   * splits remove together between them, so the candidates' savings add up to the total.
+   * gzip is apportioned by each input's share of the minified output.
    */
-  measure(file: string, originalText: string, islandFile: string, islandText: string): Measurement {
-    const before = this.bundle({ file, contents: originalText });
-    if ("error" in before) return before;
-    const after = this.bundle({ file: islandFile, contents: islandText });
-    if ("error" in after) return after;
-    const isolated = Math.max(0, before.gzip - after.gzip);
-
-    const stillShipped = this.stillShippedElsewhere(file);
-    let sharedBytes = 0;
-    for (const [input, bytes] of before.inputs) {
-      if (after.inputs.has(input)) continue;
-      if (input === "<stdin>") continue;
-      if (stillShipped(input)) sharedBytes += bytes;
+  measure(candidates: readonly SplitCandidate[]): Map<string, Measurement> {
+    const bundles = new Map<
+      string,
+      { before: BundleStats; after: BundleStats } | { error: string }
+    >();
+    for (const c of candidates) {
+      const before = this.bundle({ file: c.file, contents: c.originalText });
+      if ("error" in before) {
+        bundles.set(c.file, before);
+        continue;
+      }
+      const after = this.bundle({ file: c.islandFile, contents: c.islandText });
+      bundles.set(c.file, "error" in after ? after : { before, after });
     }
-    const ratio = before.minified > 0 ? before.gzip / before.minified : 0;
-    const conservative = Math.max(0, Math.round(isolated - sharedBytes * ratio));
-    return { bytesSaved: { isolated, conservative: Math.min(conservative, isolated) } };
+
+    const shipped = this.graph.clientGraphAfter(candidates);
+    const stillShipped = (input: string, stats: BundleStats): boolean => {
+      const pkg = packageOfInput(input);
+      if (pkg === undefined) return shipped.files.has(path.resolve(this.root, input));
+      if (shipped.packages.has(pkg)) return true;
+      return [...(stats.pulledInBy.get(input) ?? [])].some((p) => shipped.packages.has(p));
+    };
+    // Which candidates remove each input from the client, and what each one leaves shipping.
+    const removedBy = new Map<string, string[]>();
+    const keptBytes = new Map<string, number>();
+    for (const [file, b] of bundles) {
+      if ("error" in b) continue;
+      let kept = 0;
+      for (const [input, bytes] of b.before.inputs) {
+        if (input === "<stdin>" || b.after.inputs.has(input)) continue;
+        if (stillShipped(input, b.before)) kept += bytes;
+        else if (removedBy.has(input)) removedBy.get(input)?.push(file);
+        else removedBy.set(input, [file]);
+      }
+      keptBytes.set(file, kept);
+    }
+
+    const out = new Map<string, Measurement>();
+    for (const [file, b] of bundles) {
+      if ("error" in b) {
+        out.set(file, b);
+        continue;
+      }
+      const { before, after } = b;
+      const isolated = Math.max(0, before.gzip - after.gzip);
+      let notCounted = keptBytes.get(file) ?? 0;
+      const sharedWith = new Set<string>();
+      for (const [input, bytes] of before.inputs) {
+        const by = removedBy.get(input);
+        if (!by?.includes(file) || by.length === 1) continue;
+        notCounted += bytes * (1 - 1 / by.length);
+        for (const other of by) if (other !== file) sharedWith.add(other);
+      }
+      const ratio = before.minified > 0 ? before.gzip / before.minified : 0;
+      const conservative = Math.max(0, Math.round(isolated - notCounted * ratio));
+      out.set(file, {
+        bytesSaved: { isolated, conservative: Math.min(conservative, isolated) },
+        sharedWith: [...sharedWith].sort(),
+      });
+    }
+    return out;
   }
 
   /**
@@ -171,29 +237,6 @@ export class BundleMeasurer {
     }
     return files;
   }
-
-  /** Packages and project modules imported by some other client module (they keep shipping). */
-  private stillShippedElsewhere(file: string): (input: string) => boolean {
-    const packages = new Set<string>();
-    const localFiles = new Set<string>();
-    for (const node of this.graph.nodes.values()) {
-      if (node.file === file || !this.graph.isClient(node.file)) continue;
-      for (const edge of node.edges) {
-        if (edge.kind === "type") continue;
-        if (edge.to) {
-          if (edge.to !== file) localFiles.add(edge.to);
-        } else if (edge.external) {
-          packages.add(edge.external.packageName);
-        }
-      }
-    }
-    return (input: string) => {
-      const marker = "node_modules/";
-      const i = input.lastIndexOf(marker);
-      if (i !== -1) return packages.has(packageNameOf(input.slice(i + marker.length)));
-      return localFiles.has(path.resolve(this.root, input));
-    };
-  }
 }
 
 /** "esbuild: components/Card.tsx:3:20: Could not resolve "virtual-fmt"" */
@@ -215,4 +258,44 @@ function inputBytes(metafile: Metafile | undefined): Map<string, number> {
     }
   }
   return out;
+}
+
+/** The package an esbuild input belongs to (`node_modules/.pnpm/x@1/node_modules/x/a.js` -> x). */
+function packageOfInput(input: string): string | undefined {
+  const marker = "node_modules/";
+  const i = input.lastIndexOf(marker);
+  return i === -1 ? undefined : packageNameOf(input.slice(i + marker.length));
+}
+
+/**
+ * For every package file in a bundle, the packages project code imports that pull it in: date-fns's
+ * own files get `date-fns`, and a dependency of `marked` gets `marked`. Such a file keeps shipping
+ * while any of those packages does.
+ */
+function packageOwners(metafile: Metafile | undefined): Map<string, Set<string>> {
+  const owners = new Map<string, Set<string>>();
+  if (!metafile) return owners;
+  const pending: string[] = [];
+  const own = (input: string, owner: string) => {
+    const set = owners.get(input) ?? new Set<string>();
+    if (set.has(owner)) return;
+    set.add(owner);
+    owners.set(input, set);
+    pending.push(input);
+  };
+  for (const [input, info] of Object.entries(metafile.inputs)) {
+    if (packageOfInput(input) !== undefined) continue;
+    for (const imported of info.imports) {
+      const pkg = imported.external ? undefined : packageOfInput(imported.path);
+      if (pkg !== undefined) own(imported.path, pkg);
+    }
+  }
+  for (let input = pending.pop(); input !== undefined; input = pending.pop()) {
+    const from = owners.get(input) ?? new Set<string>();
+    for (const imported of metafile.inputs[input]?.imports ?? []) {
+      if (imported.external || packageOfInput(imported.path) === undefined) continue;
+      for (const owner of from) own(imported.path, owner);
+    }
+  }
+  return owners;
 }

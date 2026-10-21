@@ -17,6 +17,7 @@ import {
   symbolOfRef,
   tagNameText,
 } from "./refs.js";
+import { pickReadFields } from "./fields.js";
 import type { PickedProp } from "./mongoose.js";
 import { isMongooseLike, pickMongooseFields } from "./mongoose.js";
 import { checkSerializable, isCallableType } from "./serializable.js";
@@ -68,7 +69,10 @@ export type PropInfo = {
   type: ts.Type;
   /** A reference inside the island, used as the location for type printing and narrowing. */
   refNode: ts.Identifier;
-  /** Mongoose/ObjectId values: only the fields the island reads, built on the server. */
+  /**
+   * Only the fields the island reads, as an object built on the server: for a plain object the
+   * island reads part of, and for Mongoose/ObjectId values (`mongoose.autoSerialize`).
+   */
   picked?: PickedProp;
 };
 
@@ -1319,29 +1323,35 @@ export function planComponent(
       if (failure) return { ok: false, skip: failure };
     }
 
+    /** References to a prop inside the island (not in its `key` or in server-rendered slots). */
+    const islandRefs = (prop: PropInfo): ts.Identifier[] => {
+      const refs: ts.Identifier[] = [];
+      for (const scope of [rootNode, ...[...islandUnits].map((u) => u.node)]) {
+        forEachValueRef(scope, (id) => {
+          if ((keyAttr && containsRange(keyAttr, id)) || inSlot(id)) return;
+          if (symbolOfRef(checker, id) === prop.symbol) refs.push(id);
+        });
+      }
+      return refs;
+    };
+    const printType = (t: ts.Type) =>
+      checker.typeToString(
+        t,
+        rootNode,
+        ts.TypeFormatFlags.NoTruncation | ts.TypeFormatFlags.UseAliasDefinedOutsideCurrentScope,
+      );
     for (const prop of props.values()) {
       if (serverActionParams.has(prop.symbol)) continue; // a Server Action reference crosses as-is
       const verdict = checkSerializable(checker, prop.type, { primitivesOnly: ctx.isJs });
-      if (
-        !verdict.ok &&
-        !ctx.isJs &&
-        ctx.config.mongoose.autoSerialize &&
-        isMongooseLike(checker, prop.type)
-      ) {
-        const refs: ts.Identifier[] = [];
-        for (const scope of [rootNode, ...[...islandUnits].map((u) => u.node)]) {
-          forEachValueRef(scope, (id) => {
-            if ((keyAttr && containsRange(keyAttr, id)) || inSlot(id)) return;
-            if (symbolOfRef(checker, id) === prop.symbol) refs.push(id);
-          });
-        }
-        const picked = pickMongooseFields(checker, prop.name, refs, (t) =>
-          checker.typeToString(
-            t,
-            rootNode,
-            ts.TypeFormatFlags.NoTruncation | ts.TypeFormatFlags.UseAliasDefinedOutsideCurrentScope,
-          ),
-        );
+      if (verdict.ok) {
+        const picked = ctx.isJs
+          ? undefined
+          : pickReadFields(checker, prop.name, prop.type, islandRefs(prop), printType);
+        if (picked) prop.picked = picked;
+        continue;
+      }
+      if (!ctx.isJs && ctx.config.mongoose.autoSerialize && isMongooseLike(checker, prop.type)) {
+        const picked = pickMongooseFields(checker, prop.name, islandRefs(prop), printType);
         if (picked.ok) {
           prop.picked = picked.value;
           continue;
@@ -1352,22 +1362,20 @@ export function planComponent(
           locOf(ctx, prop.refNode),
         );
       }
-      if (!verdict.ok) {
-        const typeText = checker.typeToString(prop.type, rootNode, ts.TypeFormatFlags.NoTruncation);
-        const usedInSpread = isSpreadInside(rootNode, prop.symbol, checker);
-        if (ctx.isJs) {
-          return skip(
-            "untyped-boundary",
-            `\`${prop.name}\` would cross the server/client boundary, but its type in this untyped file (\`${typeText}\`) can't be proven serializable`,
-            locOf(ctx, prop.refNode),
-          );
-        }
+      const typeText = checker.typeToString(prop.type, rootNode, ts.TypeFormatFlags.NoTruncation);
+      const usedInSpread = isSpreadInside(rootNode, prop.symbol, checker);
+      if (ctx.isJs) {
         return skip(
-          usedInSpread ? "spread-props" : "non-serializable-prop",
-          `\`${prop.name}\` (type \`${typeText}\`) would be passed to a Client Component, but it ${verdict.reason}`,
+          "untyped-boundary",
+          `\`${prop.name}\` would cross the server/client boundary, but its type in this untyped file (\`${typeText}\`) can't be proven serializable`,
           locOf(ctx, prop.refNode),
         );
       }
+      return skip(
+        usedInSpread ? "spread-props" : "non-serializable-prop",
+        `\`${prop.name}\` (type \`${typeText}\`) would be passed to a Client Component, but it ${verdict.reason}`,
+        locOf(ctx, prop.refNode),
+      );
     }
 
     if (keyAttr) {

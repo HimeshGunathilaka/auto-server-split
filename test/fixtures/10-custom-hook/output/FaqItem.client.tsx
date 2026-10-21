@@ -1,9 +1,7 @@
 "use client";
 import { useDisclosure } from "./hooks/useDisclosure";
 
-type Faq = { question: string; answer: string; category: string };
-
-export function FaqItemDiv({ faq }: { faq: Faq }) {
+export function FaqItemDiv({ faq }: { faq: { answer: string } }) {
   const { open, toggle } = useDisclosure();
   return (
     <div className="answer">

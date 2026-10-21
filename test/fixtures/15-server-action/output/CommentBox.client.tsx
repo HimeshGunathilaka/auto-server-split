@@ -2,9 +2,7 @@
 import { useState, useTransition } from "react";
 import { likePost } from "./actions";
 
-type Post = { id: string; title: string; summary: string };
-
-export function CommentBoxButton({ post }: { post: Post }) {
+export function CommentBoxButton({ post }: { post: { id: string } }) {
   const [pending, startTransition] = useTransition();
   return (
     <button disabled={pending} onClick={() => startTransition(() => likePost(post.id))}>
@@ -13,7 +11,7 @@ export function CommentBoxButton({ post }: { post: Post }) {
   );
 }
 
-export function CommentBoxForm({ post, onSubmit }: { post: Post; onSubmit: (postId: string, text: string) => Promise<void> }) {
+export function CommentBoxForm({ post, onSubmit }: { post: { id: string }; onSubmit: (postId: string, text: string) => Promise<void> }) {
   const [text, setText] = useState("");
   return (
     <form onSubmit={(e) => { e.preventDefault(); void onSubmit(post.id, text); }}>

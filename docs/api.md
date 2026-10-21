@@ -18,11 +18,11 @@ import type {
 | `root`         | `string`                       | `process.cwd()`  | Project root (where `tsconfig.json`/`jsconfig.json` lives). Without one, Next.js defaults are used and every source file under the root is loaded. |
 | `paths`        | `string[]`                     | config `include` | Files or directories to consider, relative to `root`.                                                                                              |
 | `write`        | `boolean`                      | `false`          | Write the outputs. The API doesn't check git state; the CLI does.                                                                                  |
-| `config`       | `UserConfig`                   | `{}`             | Overrides the config file.                                                                                                                         |
+| `config`       | `UserConfig`                   | `{}`             | Overrides the config file. Validated like a config file: unknown keys and invalid values reject with a `ConfigError`.                              |
 | `configFile`   | `string`                       | auto             | Config file path relative to `root`.                                                                                                               |
 | `noConfigFile` | `boolean`                      | `false`          | Ignore config files on disk.                                                                                                                       |
 | `measure`      | `boolean`                      | `true`           | Run the esbuild size measurement. When `false`, `bytesSaved` is omitted and `minBytesSaved` isn't applied.                                         |
-| `onFile`       | `(result: FileResult) => void` |                  | Called as soon as each file is done.                                                                                                               |
+| `onFile`       | `(result: FileResult) => void` |                  | Called as soon as each file is done. With measuring on, splits are done only after every file is analysed, since savings are estimated together.   |
 
 ```ts
 type SplitResult = { files: FileResult[] };
@@ -39,7 +39,7 @@ type FileResult = {
     moved?: boolean; // a whole helper component moved into the island file
   }>;
   staticRatio: number; // share of JSX nodes that stay on the server, 0..1
-  bytesSaved?: { isolated: number; conservative: number }; // gzip bytes
+  bytesSaved?: { isolated: number; conservative: number; sharedWith?: string[] }; // gzip bytes
   measureError?: string; // why bytesSaved is missing although measuring was on (only with minBytesSaved: 0)
   diff: string; // unified diff for every touched/created file
   outputs: Record<string, string>; // relative path -> new content
@@ -47,8 +47,12 @@ type FileResult = {
 ```
 
 `bytesSaved.isolated` is the gzip size of the original file's bundle minus the island's.
-`bytesSaved.conservative` also leaves out code that other client modules still import, because the
-browser downloads it anyway. Thresholds and the CLI summary use `conservative`.
+`bytesSaved.conservative` assumes every split the tool proposes for the project is applied (this
+run's and those of the other `"use client"` files in `include`, whatever `paths` you pass). It
+leaves out code that other client modules would still import, because the browser downloads it
+anyway, and divides code that several splits remove together between them, so the splits'
+estimates add up to the total. `sharedWith` lists those other splits (relative paths); the saving
+depends on applying them too. Thresholds and the CLI summary use `conservative`.
 
 With measuring on, every split has `bytesSaved`, except when esbuild can't bundle the file: then
 the file is skipped as `measure-failed`, or, with `minBytesSaved: 0`, split with `measureError` set.
@@ -90,7 +94,8 @@ the file is skipped as `measure-failed`, or, with `minBytesSaved: 0`, split with
 
 Only files that start with `"use client"` appear in `files`, and each is either `"split"` or
 `"skipped"`; `"unchanged"` is part of the type but isn't produced by this version. Unexpected errors are reported per file
-as `internal-error` and never reject the promise. Invalid configuration rejects with a `ConfigError`.
+as `internal-error` and never reject the promise. Invalid configuration (in a config file or in the
+`config` option) rejects with a `ConfigError`.
 
 ## `SKIP_CODES` and `SKIP_TITLES`
 

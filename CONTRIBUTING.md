@@ -29,6 +29,7 @@ src/
   index.ts             public API: split(), defineConfig(), types
   cli.ts               the auto-server-split command
   interactive.ts       --interactive review
+  summary.ts           the CLI's closing summary
   split.ts             per-run orchestration (project, graph, per-file pipeline)
   types.ts             public types
   config/              config file loading and validation
@@ -43,8 +44,8 @@ test/
   fixtures/NN-name/    input/ plus output/ (exact expected files) or expected-skip.json
   eslint-project/      a small project used by the ESLint rule tests
   unit/                unit tests
-  *.test.ts            fixture runner, CLI, interactive mode, config loading, size measurement,
-                       ESLint rule, and ESLint/CLI parity
+  *.test.ts            fixture runner, CLI, interactive mode, summary, config loading, importers,
+                       size measurement, line endings, ESLint rule, and ESLint/CLI parity
 e2e/                   e2e harness and the Next.js apps it builds
 scripts/               perf and benchmark scripts
 docs/                  user docs, design decisions, benchmarks

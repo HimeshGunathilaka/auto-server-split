@@ -9,6 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
+import * as prettier from "prettier";
 import { afterAll, describe, expect, it } from "vitest";
 import { split } from "../src/index.js";
 import { runSplit } from "../src/split.js";
@@ -181,16 +182,36 @@ describe("line endings", () => {
     }
   });
 
-  it("lets the project's Prettier decide when it formats the output", async () => {
-    const auto = await splitPostCard(crlf(POST_CARD), {
-      ".prettierrc.json": JSON.stringify({ endOfLine: "auto" }),
-    });
-    expect(auto.server).not.toMatch(/(?:^|[^\r])\n/);
-    expect(auto.island).not.toMatch(/(?:^|[^\r])\n/);
+  it("keeps the original's line endings when the project's Prettier formats the output", async () => {
+    const formatted = await prettier.format(POST_CARD, { parser: "typescript" });
+    // Whatever the config's endOfLine, a CRLF file stays CRLF and an LF file stays LF.
+    for (const endOfLine of ["lf", "crlf", "auto"]) {
+      const config = { ".prettierrc.json": JSON.stringify({ endOfLine }) };
+      const fromCrlf = await splitPostCard(crlf(formatted), config);
+      expect(fromCrlf.server, endOfLine).not.toMatch(/(?:^|[^\r])\n/);
+      expect(fromCrlf.island, endOfLine).not.toMatch(/(?:^|[^\r])\n/);
+      const fromLf = await splitPostCard(formatted, config);
+      expect(fromLf.server, endOfLine).not.toContain("\r");
+      expect(fromLf.island, endOfLine).not.toContain("\r");
+    }
+  });
 
-    // Prettier's default endOfLine is "lf": the formatted files are LF, like `prettier --write`.
-    const lf = await splitPostCard(crlf(POST_CARD), { ".prettierrc.json": "{}" });
-    expect(lf.server).not.toContain("\r");
-    expect(lf.island).not.toContain("\r");
+  it("formats only when the original is already formatted with the project's Prettier", async () => {
+    const config = { ".prettierrc.json": "{}" };
+    // POST_CARD's signature is longer than Prettier's printWidth (80).
+    const formatted = await prettier.format(POST_CARD, { parser: "typescript" });
+    expect(formatted).not.toBe(POST_CARD);
+
+    const clean = await splitPostCard(formatted, config);
+    expect(await prettier.check(clean.server, { parser: "typescript" })).toBe(true);
+    expect(await prettier.check(clean.island, { parser: "typescript" })).toBe(true);
+
+    // Not formatted: formatting would rewrite lines the split doesn't touch, so it doesn't run.
+    const untouched = await splitPostCard(POST_CARD, config);
+    const unformatted = await splitPostCard(POST_CARD);
+    expect(untouched).toEqual(unformatted);
+    expect(untouched.server).toContain(
+      "export default function PostCard({ title, date }: { title: string; date: string }) {\n",
+    );
   });
 });

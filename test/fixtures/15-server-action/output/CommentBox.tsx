@@ -7,8 +7,8 @@ export default function CommentBox({ post, onSubmit }: { post: Post; onSubmit: (
     <section>
       <h2>{post.title}</h2>
       <p>{post.summary}</p>
-      <CommentBoxButton post={post} />
-      <CommentBoxForm post={post} onSubmit={onSubmit} />
+      <CommentBoxButton post={{ id: post.id }} />
+      <CommentBoxForm post={{ id: post.id }} onSubmit={onSubmit} />
     </section>
   );
 }
