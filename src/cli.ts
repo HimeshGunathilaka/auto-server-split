@@ -5,7 +5,7 @@ import path from "node:path";
 import { defineCommand, runMain } from "citty";
 import pc from "picocolors";
 import { ConfigError } from "./config/config.js";
-import { formatBytes, runSplit } from "./split.js";
+import { formatBytes, isChange, runSplit } from "./split.js";
 import { summaryLines } from "./summary.js";
 import type { FileResult } from "./types.js";
 
@@ -29,7 +29,17 @@ function colorDiff(diff: string): string {
     .join("\n");
 }
 
-function describeSplit(file: FileResult): string {
+function savedText(file: FileResult, assumes = ""): string {
+  return file.bytesSaved
+    ? ` · ~${formatBytes(file.bytesSaved.conservative)} gzip saved (estimated${assumes})`
+    : file.measureError
+      ? ` · ${pc.yellow("saving not measured")} (${file.measureError})`
+      : "";
+}
+
+function describeChange(file: FileResult): string {
+  if (file.status === "directive-removed")
+    return `${pc.green('✔ removed "use client"')} ${pc.bold(file.file)} · no client-only code${savedText(file)}`;
   const islands = file.islands.map(
     (i) => `${i.name} <${i.rootTag}>${i.props.length ? ` (props: ${i.props.join(", ")})` : ""}`,
   );
@@ -40,11 +50,7 @@ function describeSplit(file: FileResult): string {
       : shared.length <= 2
         ? `; assumes ${shared.join(" and ")} ${shared.length === 1 ? "is" : "are"} split too`
         : `; assumes ${shared.length} other files are split too`;
-  const saved = file.bytesSaved
-    ? ` · ~${formatBytes(file.bytesSaved.conservative)} gzip saved (estimated${assumes})`
-    : file.measureError
-      ? ` · ${pc.yellow("saving not measured")} (${file.measureError})`
-      : "";
+  const saved = savedText(file, assumes);
   return `${pc.green("✔ split")} ${pc.bold(file.file)} · ${file.islands.length} island${file.islands.length === 1 ? "" : "s"} · ${Math.round(file.staticRatio * 100)}% static${saved}\n    ${islands.join("\n    ")}`;
 }
 
@@ -103,7 +109,7 @@ const main = defineCommand({
     write: { type: "boolean", description: "Apply the changes" },
     check: {
       type: "boolean",
-      description: "CI mode: exit 2 if any split is available, change nothing",
+      description: "CI mode: exit 2 if any change is available, change nothing",
     },
     interactive: {
       type: "boolean",
@@ -124,6 +130,10 @@ const main = defineCommand({
       type: "boolean",
       default: true,
       description: "Measure bundle sizes with esbuild (--no-measure to skip)",
+    },
+    "remove-unused-directives": {
+      type: "boolean",
+      description: 'Also remove "use client" from files with no client-only code',
     },
   },
   async run({ args }) {
@@ -180,11 +190,14 @@ const main = defineCommand({
         ...(paths.length > 0 ? { paths } : {}),
         write: false,
         ...(args.config ? { configFile: args.config } : {}),
+        ...(args["remove-unused-directives"] ? { config: { removeUnusedDirectives: true } } : {}),
         measure: args.measure !== false,
+        // Interactive review accepts changes one by one, so a later pass can't build on them.
+        iterate: !args.interactive,
         onFile: (file) => {
           if (json || args.interactive) return;
-          if (file.status === "split") {
-            log(describeSplit(file));
+          if (isChange(file)) {
+            log(describeChange(file));
             if (!args.check) log(colorDiff(file.diff));
           } else if (file.skipped) {
             log(describeSkip(file, verbose));
@@ -200,7 +213,7 @@ const main = defineCommand({
     }
 
     let files = report.files;
-    let toWrite = args.write ? files.filter((f) => f.status === "split") : [];
+    let toWrite = args.write ? files.filter(isChange) : [];
     // Interactive mode: proposed splits that weren't accepted (rejected, or left by [q]uit).
     let declined = 0;
     if (args.interactive) {
@@ -209,14 +222,14 @@ const main = defineCommand({
         input: process.stdin,
         output: process.stdout,
         colorDiff,
-        describe: describeSplit,
+        describe: describeChange,
       });
       const acceptedByFile = new Map(toWrite.map((f) => [f.file, f]));
-      declined = files.filter((f) => f.status === "split" && !acceptedByFile.has(f.file)).length;
+      declined = files.filter((f) => isChange(f) && !acceptedByFile.has(f.file)).length;
       files = files.map((f) => acceptedByFile.get(f.file) ?? f);
     }
 
-    const splits = args.interactive ? toWrite : files.filter((f) => f.status === "split");
+    const splits = args.interactive ? toWrite : files.filter(isChange);
     if (toWrite.length > 0) {
       const touched = toWrite.flatMap((f) => Object.keys(f.outputs));
       if (!args["allow-dirty"]) {

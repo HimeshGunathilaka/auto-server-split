@@ -83,6 +83,42 @@ describe("prefer-server-split without typed linting", () => {
   tester.run("prefer-server-split", rule, cases);
 });
 
+const directiveDir = path.resolve(import.meta.dirname, "eslint-directive-project");
+const panel = path.join(directiveDir, "components/Panel.tsx");
+const directiveCases = {
+  valid: [],
+  invalid: [
+    {
+      code: readFileSync(panel, "utf8"),
+      filename: panel,
+      errors: [
+        {
+          message:
+            'Panel uses no client-only code, and every importer is a Server Component, so "use client" is unnecessary.',
+          line: 1,
+        },
+      ],
+      output: readFileSync(panel, "utf8").replace('"use client";\n\n', ""),
+    },
+  ],
+};
+
+describe("unused directives (removeUnusedDirectives in the config)", () => {
+  new RuleTester({
+    languageOptions: {
+      parser: tseslint.parser,
+      parserOptions: {
+        project: "./tsconfig.json",
+        tsconfigRootDir: directiveDir,
+        ecmaFeatures: { jsx: true },
+      },
+    },
+  }).run("prefer-server-split (typed)", rule, directiveCases);
+  new RuleTester({
+    languageOptions: { parser: tseslint.parser, parserOptions: { ecmaFeatures: { jsx: true } } },
+  }).run("prefer-server-split (untyped)", rule, directiveCases);
+});
+
 describe("recommended config", () => {
   it("enables the rule as a warning with minStaticRatio 0.5", async () => {
     const { expect } = await import("vitest");

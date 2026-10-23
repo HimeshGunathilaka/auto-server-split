@@ -1,6 +1,7 @@
 import { createInterface } from "node:readline/promises";
 import type { Readable, Writable } from "node:stream";
 import pc from "picocolors";
+import { isChange } from "./split.js";
 import type { FileResult } from "./types.js";
 
 type Rerun = (relFile: string, renames: Readonly<Record<string, string>>) => Promise<FileResult>;
@@ -13,9 +14,9 @@ type Io = {
 };
 
 /**
- * Walks through each proposed split: [y]es / [n]o / [r]ename islands / [d]iff / [q]uit.
- * Renames go back through the engine (and its self-check), so a bad name can't produce bad code.
- * Returns the accepted results, with renames applied.
+ * Walks through each proposed split: [y]es / [n]o / [r]ename islands / [d]iff / [q]uit (no rename
+ * for a removed directive). Renames go back through the engine (and its self-check), so a bad name
+ * can't produce bad code. Returns the accepted results, with renames applied.
  */
 export async function reviewInteractively(
   files: FileResult[],
@@ -33,18 +34,18 @@ export async function reviewInteractively(
   const accepted: FileResult[] = [];
 
   try {
-    review: for (const original of files.filter((f) => f.status === "split")) {
+    review: for (const original of files.filter(isChange)) {
       let current = original;
       const defaults = original.islands.map((i) => i.name);
       const renames: Record<string, string> = {};
+      const canRename = original.status === "split";
+      const question = canRename
+        ? `Apply this split? ${pc.bold("[y]")}es / ${pc.bold("[n]")}o / ${pc.bold("[r]")}ename islands / ${pc.bold("[d]")}iff / ${pc.bold("[q]")}uit: `
+        : `Remove the directive? ${pc.bold("[y]")}es / ${pc.bold("[n]")}o / ${pc.bold("[d]")}iff / ${pc.bold("[q]")}uit: `;
       print();
       print(io.describe(current));
       for (;;) {
-        const answer = (
-          await ask(
-            `Apply this split? ${pc.bold("[y]")}es / ${pc.bold("[n]")}o / ${pc.bold("[r]")}ename islands / ${pc.bold("[d]")}iff / ${pc.bold("[q]")}uit: `,
-          )
-        )?.toLowerCase();
+        const answer = (await ask(question))?.toLowerCase();
         if (answer === undefined || answer === "q") break review;
         if (answer === "y") {
           accepted.push(current);
@@ -55,7 +56,7 @@ export async function reviewInteractively(
           print(io.colorDiff(current.diff));
           continue;
         }
-        if (answer === "r") {
+        if (answer === "r" && canRename) {
           const proposed = { ...renames };
           for (const [i, island] of current.islands.entries()) {
             if (island.moved) continue;
@@ -74,7 +75,7 @@ export async function reviewInteractively(
           }
           continue;
         }
-        print("  Please answer y, n, r, d or q.");
+        print(`  Please answer y, n, ${canRename ? "r, " : ""}d or q.`);
       }
     }
   } finally {

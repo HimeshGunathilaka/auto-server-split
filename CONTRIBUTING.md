@@ -43,6 +43,7 @@ src/
 test/
   fixtures/NN-name/    input/ plus output/ (exact expected files) or expected-skip.json
   eslint-project/      a small project used by the ESLint rule tests
+  eslint-directive-project/  the same, with removeUnusedDirectives on (autofix tests)
   unit/                unit tests
   *.test.ts            fixture runner, CLI, interactive mode, summary, config loading, importers,
                        size measurement, line endings, ESLint rule, and ESLint/CLI parity

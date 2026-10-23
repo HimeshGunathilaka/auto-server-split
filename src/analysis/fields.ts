@@ -23,7 +23,8 @@ function isPlainObjectType(checker: ts.TypeChecker, type: ts.Type): boolean {
  *
  * Undefined, so the whole value is passed as before, when the island uses the object as a whole
  * (passes it on, spreads it, lists it as a hook dependency), uses optional chaining or element access
- * on it, writes to it, or reads every field anyway.
+ * on it, writes to it, or reads every field anyway, and when `acceptField` rejects the type of a
+ * field the island reads.
  */
 export function pickReadFields(
   checker: ts.TypeChecker,
@@ -31,6 +32,7 @@ export function pickReadFields(
   type: ts.Type,
   refs: ts.Identifier[],
   printType: (type: ts.Type) => string,
+  acceptField: (type: ts.Type) => boolean = () => true,
 ): PickedProp | undefined {
   if (refs.length === 0 || !isPlainObjectType(checker, type)) return undefined;
   const read = new Set<string>();
@@ -58,6 +60,7 @@ export function pickReadFields(
     if (!read.has(field)) continue;
     const optional = (symbol.flags & ts.SymbolFlags.Optional) !== 0;
     const fieldType = checker.getTypeOfSymbolAtLocation(symbol, refs[0] as ts.Node);
+    if (!acceptField(fieldType)) return undefined;
     exprs.push(`${field}: ${name}.${field}`);
     types.push(`${field}${optional ? "?" : ""}: ${printType(fieldType)}`);
   }

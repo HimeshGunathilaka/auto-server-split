@@ -22,10 +22,9 @@ type SelfCheckInput = {
   moduleSafety: ModuleSafety;
   serverSafeHooks: ReadonlySet<string>;
   file: string;
-  islandFile: string;
-  islandSpecifier: string;
   serverText: string;
-  islandText: string;
+  /** The generated island file; undefined when only the `"use client"` directive is removed. */
+  island: { file: string; specifier: string; text: string } | undefined;
   /** Files whose diagnostics must not change (importers of `file`). */
   importers: string[];
   /** Component props that importers fill with Server Actions; they may cross the boundary. */
@@ -59,7 +58,7 @@ function merge(into: Map<DiagKey, number>, from: Map<DiagKey, number>): void {
  * code left, every island prop is serializable, and the island file has no server-only imports.
  */
 export function selfCheck(input: SelfCheckInput): Outcome<void> {
-  const { loaded, file, islandFile } = input;
+  const { loaded, file, island } = input;
   const project = loaded.project;
   const original = project.getSourceFile(file);
   if (!original) return skip("self-check-failed", "the original file is not in the project");
@@ -79,16 +78,18 @@ export function selfCheck(input: SelfCheckInput): Outcome<void> {
   let islandWrapper: ReturnType<typeof project.createSourceFile> | undefined;
   try {
     setSourceText(original, input.serverText);
-    islandWrapper = project.createSourceFile(islandFile, input.islandText, { overwrite: false });
+    if (island)
+      islandWrapper = project.createSourceFile(island.file, island.text, { overwrite: false });
     const program = project.getProgram().compilerObject;
     const checker = program.getTypeChecker();
     const serverSf = program.getSourceFile(file);
-    const islandSf = program.getSourceFile(islandFile);
-    if (!serverSf || !islandSf)
+    const islandSf = island ? program.getSourceFile(island.file) : undefined;
+    if (!serverSf || (island && !islandSf))
       return skip("self-check-failed", "generated files are missing from the program");
+    const outputs = islandSf ? [serverSf, islandSf] : [serverSf];
 
     // 1. Both files parse.
-    for (const sf of [serverSf, islandSf]) {
+    for (const sf of outputs) {
       const syntax = program.getSyntacticDiagnostics(sf);
       const first = syntax[0];
       if (first) {
@@ -101,8 +102,7 @@ export function selfCheck(input: SelfCheckInput): Outcome<void> {
 
     // 2. No new type errors.
     const after = new Map<DiagKey, number>();
-    merge(after, diagnosticsOf(program, serverSf, "self"));
-    merge(after, diagnosticsOf(program, islandSf, "self"));
+    for (const sf of outputs) merge(after, diagnosticsOf(program, sf, "self"));
     for (const importer of input.importers) {
       const isf = program.getSourceFile(importer);
       if (isf) merge(after, diagnosticsOf(program, isf, importer));
@@ -132,7 +132,7 @@ export function selfCheck(input: SelfCheckInput): Outcome<void> {
       input.serverSafeHooks,
     );
     const islandSymbols = new Set(
-      imports.bindings.filter((b) => b.specifier === input.islandSpecifier).map((b) => b.symbol),
+      imports.bindings.filter((b) => b.specifier === island?.specifier).map((b) => b.symbol),
     );
     for (const marker of facts.scanMarkers(serverSf)) {
       if (
@@ -196,37 +196,42 @@ export function selfCheck(input: SelfCheckInput): Outcome<void> {
     if (problem) return skip("self-check-failed", problem);
 
     // 5. The island file imports nothing server-only.
-    for (const statement of islandSf.statements) {
-      if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier))
-        continue;
-      if (statement.importClause?.isTypeOnly) continue;
-      const spec = statement.moduleSpecifier.text;
-      const resolved = ts.resolveModuleName(
-        spec,
-        islandFile,
-        { ...loaded.compilerOptions, allowJs: true },
-        ts.sys,
-      ).resolvedModule;
-      // Project modules were already imported by the original client file, so they are client-safe.
-      if (
-        resolved &&
-        !resolved.isExternalLibraryImport &&
-        !resolved.resolvedFileName.includes("/node_modules/")
-      )
-        continue;
-      const info = input.classifier.classify(spec, islandFile);
-      if (info.kind === "builtin" || info.kind === "server-only-marker") {
-        return skip("self-check-failed", `the island file imports the server-only module ${spec}`);
-      }
-      if (info.kind === "framework") {
-        const rule = input.framework.classifyModule(spec);
-        if (rule?.kind === "per-name") {
-          const names = namedImports(statement);
-          if (names.some((n) => rule.classify(n) === "server-only")) {
-            return skip(
-              "self-check-failed",
-              `the island file imports the server-only module ${spec}`,
-            );
+    if (island && islandSf) {
+      for (const statement of islandSf.statements) {
+        if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier))
+          continue;
+        if (statement.importClause?.isTypeOnly) continue;
+        const spec = statement.moduleSpecifier.text;
+        const resolved = ts.resolveModuleName(
+          spec,
+          island.file,
+          { ...loaded.compilerOptions, allowJs: true },
+          ts.sys,
+        ).resolvedModule;
+        // Project modules were already imported by the original client file, so they are client-safe.
+        if (
+          resolved &&
+          !resolved.isExternalLibraryImport &&
+          !resolved.resolvedFileName.includes("/node_modules/")
+        )
+          continue;
+        const info = input.classifier.classify(spec, island.file);
+        if (info.kind === "builtin" || info.kind === "server-only-marker") {
+          return skip(
+            "self-check-failed",
+            `the island file imports the server-only module ${spec}`,
+          );
+        }
+        if (info.kind === "framework") {
+          const rule = input.framework.classifyModule(spec);
+          if (rule?.kind === "per-name") {
+            const names = namedImports(statement);
+            if (names.some((n) => rule.classify(n) === "server-only")) {
+              return skip(
+                "self-check-failed",
+                `the island file imports the server-only module ${spec}`,
+              );
+            }
           }
         }
       }

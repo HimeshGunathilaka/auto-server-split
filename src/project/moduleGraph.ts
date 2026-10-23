@@ -27,10 +27,10 @@ export class ModuleGraph {
 
   /**
    * The client graph as it would be with `split` applied: the split files stop being client roots
-   * and their island files become roots. Returns every project module it reaches and the packages
-   * those modules import.
+   * and their island files (if any) become roots. Returns every project module it reaches and the
+   * packages those modules import.
    */
-  clientGraphAfter(split: readonly { file: string; islandFile: string; islandText: string }[]): {
+  clientGraphAfter(split: readonly { file: string; island?: { file: string; text: string } }[]): {
     files: Set<string>;
     packages: Set<string>;
   } {
@@ -43,7 +43,8 @@ export class ModuleGraph {
       files.add(node.file);
       pending.push(node.edges);
     }
-    for (const s of split) pending.push(this.edgesOfText(s.islandFile, s.islandText));
+    for (const s of split)
+      if (s.island) pending.push(this.edgesOfText(s.island.file, s.island.text));
     for (let edges = pending.pop(); edges; edges = pending.pop()) {
       for (const edge of edges) {
         if (edge.kind === "type") continue;
@@ -200,7 +201,15 @@ export function buildModuleGraph(
   const graph = new ModuleGraph(loaded.root);
   // Resolve with allowJs so edges into JS files are never lost, whatever the user's tsconfig says.
   const options: ts.CompilerOptions = { ...loaded.compilerOptions, allowJs: true };
-  const host: ts.ModuleResolutionHost = ts.sys;
+  const overlay = loaded.overlay;
+  const host: ts.ModuleResolutionHost = overlay
+    ? {
+        ...ts.sys,
+        fileExists: (f) => overlay.has(path.resolve(f)) || ts.sys.fileExists(f),
+        readFile: (f) => overlay.get(path.resolve(f)) ?? ts.sys.readFile(f),
+        realpath: (f) => (overlay.has(path.resolve(f)) ? f : (ts.sys.realpath?.(f) ?? f)),
+      }
+    : ts.sys;
   const cache = ts.createModuleResolutionCache(loaded.root, (f) => f, options);
 
   const resolve = (specifier: string, from: string): string | undefined => {

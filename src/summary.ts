@@ -8,13 +8,19 @@ type SummaryInput = {
   files: FileResult[];
   filesScanned: number;
   mode: "dry-run" | "write" | "check" | "interactive";
-  /** The splits applied (`--write`, accepted in `--interactive`) or available (dry run, `--check`). */
+  /**
+   * The changes (splits and removed directives) applied (`--write`, accepted in `--interactive`) or
+   * available (dry run, `--check`).
+   */
   splits: FileResult[];
-  /** Interactive mode: proposed splits that weren't accepted. */
+  /** Interactive mode: proposed changes that weren't accepted. */
   declined: number;
 };
 
-/** The CLI's closing summary: files scanned, split, declined and skipped, and the estimated saving. */
+/**
+ * The CLI's closing summary: files scanned, split, with the directive removed, declined and
+ * skipped, and the estimated saving.
+ */
 export function summaryLines({
   files,
   filesScanned,
@@ -31,13 +37,13 @@ export function summaryLines({
   lines.push("", pc.bold("Summary"));
   lines.push(`  files scanned:  ${filesScanned} (${files.length} with "use client")`);
   const written = mode === "write" || mode === "interactive";
-  const writeNote = written
-    ? ` (${splits.length} written)`
-    : mode === "check"
-      ? ""
-      : " (dry run, nothing written)";
-  lines.push(`  files split:    ${splits.length}${writeNote}`);
-  if (declined > 0) lines.push(`  files declined: ${declined} (proposed splits not accepted)`);
+  const writeNote = mode === "check" ? "" : " (dry run, nothing written)";
+  const split = splits.filter((f) => f.status === "split").length;
+  const removed = splits.length - split;
+  const note = (n: number) => (written ? ` (${n} written)` : writeNote);
+  lines.push(`  files split:    ${split}${note(split)}`);
+  if (removed > 0) lines.push(`  directives removed: ${removed}${note(removed)}`);
+  if (declined > 0) lines.push(`  files declined: ${declined} (proposed changes not accepted)`);
   lines.push(`  files skipped:  ${skipped.length}`);
   for (const [code, count] of [...byCode].sort((a, b) => b[1] - a[1])) {
     lines.push(`    ${String(count).padStart(3)}  ${code.padEnd(30)} ${pc.dim(SKIP_TITLES[code])}`);

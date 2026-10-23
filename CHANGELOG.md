@@ -2,6 +2,33 @@
 
 All notable changes to this project are documented here. The project follows [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+- Chained splits in one run. A component that only a client component imports is skipped as
+  `imported-by-client`, but becomes splittable once that importer is split. The run now analyses
+  such files again, against the earlier changes in memory, until nothing new changes (at most 10
+  passes), so a single dry run shows the whole result instead of asking you to rerun. Each file is
+  reported once. `--interactive` still makes one pass. API: `split({ iterate: false })` makes one
+  pass.
+- New option `removeUnusedDirectives` (CLI: `--remove-unused-directives`), off by default. A
+  `"use client"` file with no client-only code (`no-islands`) loses its directive, after the same
+  importer checks and self-check as a split. The result has the new status `"directive-removed"`;
+  `minBytesSaved` and `minStaticRatio` don't apply, since no file is created, but the saving is
+  estimated and reported. The summary lists `directives removed`, and `--check` counts them. With
+  the option in the config file, the ESLint rule reports these files too, and fixes them by
+  removing the directive (its first autofix). Removing a directive can make the files it imports
+  splittable, which the next pass picks up.
+- Components held in variables no longer block a split. An island element like
+  `<LinkIcon className="w-6" />` (with `const LinkIcon = link.icon`) is rendered on the server and
+  passed in as `children`, and an object that holds functions crosses the boundary when the island
+  reads only its serializable fields (`link={{ name: link.name, href: link.href }}`). This splits
+  next-learn's `nav-links.tsx`, which was skipped as `non-serializable-prop`.
+- A list item's `key` on a line of its own no longer leaves a blank line in the island.
+- `output-exists` and `would-create-route` are checked after the analysis, so a file with another
+  problem reports that problem.
+- docs/prior-art.md: the Next.js 16.4 `next-bundle-optimizer` agent skill and bundle analyzer
+  export, an unused-directive lint rule, and editor boundary visualizers.
+
 ## 1.0.1 — fixes from an integration run
 
 - Size estimates are made for the whole set of splits. A file's estimate assumes the other splits

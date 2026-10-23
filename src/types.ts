@@ -13,7 +13,11 @@ export type IslandInfo = {
 
 export type FileResult = {
   file: string;
-  status: "split" | "skipped" | "unchanged";
+  /**
+   * `"directive-removed"`: the file has no client-only code, and only its `"use client"` directive
+   * is removed (with `removeUnusedDirectives`). Its `islands` is empty and `outputs` holds the file.
+   */
+  status: "split" | "directive-removed" | "skipped" | "unchanged";
   skipped?: Skip;
   islands: IslandInfo[];
   /** Share of JSX nodes that end up outside islands, 0..1. */
@@ -52,6 +56,7 @@ export type UserConfig = {
   minStaticRatio?: number;
   prettier?: "auto" | false;
   mongoose?: { autoSerialize?: boolean };
+  removeUnusedDirectives?: boolean;
 };
 
 export type ResolvedConfig = {
@@ -66,6 +71,7 @@ export type ResolvedConfig = {
   minStaticRatio: number;
   prettier: "auto" | false;
   mongoose: { autoSerialize: boolean };
+  removeUnusedDirectives: boolean;
 };
 
 export type SplitOptions = {
@@ -83,6 +89,12 @@ export type SplitOptions = {
   noConfigFile?: boolean;
   /** Skip the esbuild size measurement (faster; bytesSaved is omitted and minBytesSaved is not applied). */
   measure?: boolean;
+  /**
+   * Repeat the analysis until no new change is found (default true). A split can make another file
+   * splittable: a component imported only by a client component that is split becomes splittable
+   * once its importer is a Server Component. Later passes see the earlier passes' outputs in memory.
+   */
+  iterate?: boolean;
   /** Called with each file result as soon as it is ready. */
   onFile?: (result: FileResult) => void;
 };

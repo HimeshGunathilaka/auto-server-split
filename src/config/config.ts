@@ -17,6 +17,7 @@ const DEFAULT_CONFIG: ResolvedConfig = {
   minStaticRatio: 0.3,
   prettier: "auto",
   mongoose: { autoSerialize: false },
+  removeUnusedDirectives: false,
 };
 
 const CONFIG_FILES = [
@@ -58,6 +59,7 @@ const KEYS: Record<keyof UserConfig, (v: unknown) => string | undefined> = {
     }
     return undefined;
   },
+  removeUnusedDirectives: (v) => (typeof v === "boolean" ? undefined : "must be a boolean"),
 };
 
 function stringArray(v: unknown): string | undefined {

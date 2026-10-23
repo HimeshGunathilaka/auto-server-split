@@ -22,6 +22,7 @@ import type {
 | `configFile`   | `string`                       | auto             | Config file path relative to `root`.                                                                                                               |
 | `noConfigFile` | `boolean`                      | `false`          | Ignore config files on disk.                                                                                                                       |
 | `measure`      | `boolean`                      | `true`           | Run the esbuild size measurement. When `false`, `bytesSaved` is omitted and `minBytesSaved` isn't applied.                                         |
+| `iterate`      | `boolean`                      | `true`           | Repeat the analysis until nothing new can change (see [Passes](#passes)). `false` makes one pass.                                                  |
 | `onFile`       | `(result: FileResult) => void` |                  | Called as soon as each file is done. With measuring on, splits are done only after every file is analysed, since savings are estimated together.   |
 
 ```ts
@@ -29,7 +30,7 @@ type SplitResult = { files: FileResult[] };
 
 type FileResult = {
   file: string; // relative to root
-  status: "split" | "skipped" | "unchanged";
+  status: "split" | "directive-removed" | "skipped" | "unchanged";
   skipped?: { code: SkipCode; message: string; location?: { line: number; column: number } };
   islands: Array<{
     name: string; // e.g. "PostCardButton"
@@ -56,6 +57,7 @@ depends on applying them too. Thresholds and the CLI summary use `conservative`.
 
 With measuring on, every split has `bytesSaved`, except when esbuild can't bundle the file: then
 the file is skipped as `measure-failed`, or, with `minBytesSaved: 0`, split with `measureError` set.
+A removed directive always gets `bytesSaved` or `measureError`: thresholds don't apply to it.
 
 `npx auto-server-split --json` prints the same `{ files }` object. One split and one skip
 (`diff` and `outputs` shortened):
@@ -92,10 +94,27 @@ the file is skipped as `measure-failed`, or, with `minBytesSaved: 0`, split with
 }
 ```
 
-Only files that start with `"use client"` appear in `files`, and each is either `"split"` or
-`"skipped"`; `"unchanged"` is part of the type but isn't produced by this version. Unexpected errors are reported per file
-as `internal-error` and never reject the promise. Invalid configuration (in a config file or in the
+Only files that start with `"use client"` appear in `files`, and each is `"split"`,
+`"directive-removed"` (with [`removeUnusedDirectives`](configuration.md#removeunuseddirectives): the
+file has no client-only code and only loses its directive; `islands` is empty and `outputs` holds
+just the file) or `"skipped"`. `"unchanged"` is part of the type but isn't produced by this
+version. Unexpected errors are reported per file as `internal-error` and never reject the promise. Invalid configuration (in a config file or in the
 `config` option) rejects with a `ConfigError`.
+
+## Passes
+
+A change can make another file changeable: a component that only a client component imports is
+skipped as `imported-by-client`, but once that importer is split (and the component stays in its
+server part) or loses its directive, the component can be split too. So `split()` analyses those
+skipped files again, in a pass that sees the earlier passes' outputs in memory, until a pass
+changes nothing (at most 10 passes). Nothing is written in between, so a dry run shows the whole
+result. Each file is reported once, with its final result.
+
+A later pass's size estimate bundles the files a component imports as they are on disk, so a
+dependency of an earlier pass's split counts as it was before that split.
+
+The CLI's `--interactive` mode makes one pass, since you accept each change separately; run it
+again for the rest. The `rerun()` function it uses needs a single-pass run.
 
 ## `SKIP_CODES` and `SKIP_TITLES`
 

@@ -37,8 +37,21 @@ Options:
 Turning off `selfCheck` or `measure` trades accuracy for speed: the rule may then report a file the
 CLI skips.
 
-**No autofix.** ESLint fixes can only edit the linted file, and a split creates a new one. Run the
-CLI to apply the split.
+**No autofix for splits.** ESLint fixes can only edit the linted file, and a split creates a new
+one. Run the CLI to apply the split.
+
+**Unused directives.** With
+[`removeUnusedDirectives`](configuration.md#removeunuseddirectives) in the config file, the rule
+also reports a `"use client"` file the CLI would remove the directive from (no client-only code,
+every importer a Server Component, self-check passed):
+
+```
+Panel uses no client-only code, and every importer is a Server Component, so "use client" is unnecessary.
+```
+
+This one has an autofix (`eslint --fix`, or the editor's quick fix), because it only edits the
+linted file: it removes the directive. `minBytesSaved` and the rule's `minStaticRatio` don't apply
+to it, as they don't in the CLI.
 
 ### Typed and untyped linting
 

@@ -105,6 +105,12 @@ A function-typed prop is allowed when every importer passes a Server Action for 
 documents and values containing `ObjectId`s can cross the boundary with `mongoose.autoSerialize: true`,
 as long as the island only reads individual fields (not the whole object).
 
+Two cases are handled without a skip. An object that also holds functions can cross when the
+island reads only its serializable fields (`link.href`, `link.name`): only those fields are
+passed. And a component held in a variable (`const LinkIcon = link.icon`) that an island renders
+as `<LinkIcon className="w-6" />`, with nothing client-only in that element, is rendered on the
+server and passed into the island as `children` (or `slotN`) instead of as a function.
+
 **To fix:** pass data instead of behaviour (an id or URL), make the function a Server Action
 (`"use server"`), or keep the component fully client-side.
 
@@ -173,8 +179,11 @@ Component on purpose and pass what the client needs as a prop.
 ## `no-islands`
 
 The file has no client-only code at all. The `"use client"` directive may simply be unnecessary.
-The tool never removes it automatically; check that nothing imports the file expecting a client
-component, then remove it yourself.
+
+**To fix:** set [`removeUnusedDirectives`](configuration.md#removeunuseddirectives) (or pass
+`--remove-unused-directives`) and the tool removes the directive, after the same importer checks
+and self-check as a split. Removing it can make the components the file imports splittable; a run
+picks those up in its next pass.
 
 ## `fully-interactive`
 

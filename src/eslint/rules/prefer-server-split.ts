@@ -9,12 +9,15 @@ type ParserServicesWithProgram = {
 };
 
 /**
- * Reports `"use client"` files that `auto-server-split` can split. Report only: a split creates a
- * new file, which an ESLint fix can't do, so the CLI is the fixer (see docs/decisions.md).
+ * Reports `"use client"` files that `auto-server-split` can split. A split creates a new file, which
+ * an ESLint fix can't do, so the CLI is the fixer (see docs/decisions.md). With the config's
+ * `removeUnusedDirectives`, it also reports directives on files with no client-only code, and fixes
+ * those by removing the directive.
  */
 export const preferServerSplit: Rule.RuleModule = {
   meta: {
     type: "suggestion",
+    fixable: "code",
     docs: {
       description:
         'Suggest splitting partly-interactive "use client" components into a Server Component plus client islands',
@@ -31,6 +34,8 @@ export const preferServerSplit: Rule.RuleModule = {
       },
     ],
     messages: {
+      unusedDirective:
+        '{{component}} uses no client-only code, and every importer is a Server Component, so "use client" is unnecessary.',
       preferSplit:
         "{{component}} is {{ratio}}% static with {{count}} interactive island{{plural}} ({{tags}}). Run: npx auto-server-split {{file}} --write",
     },
@@ -62,6 +67,19 @@ export const preferServerSplit: Rule.RuleModule = {
         });
         if (!result?.ok) return;
         const { islands, staticRatio, componentName } = result.value;
+        if (!result.value.island) {
+          const text = context.sourceCode.text;
+          const [start, directiveEnd] = directive.range ?? [0, 0];
+          let end = directiveEnd;
+          while (end < text.length && /\s/.test(text[end] ?? "")) end++;
+          context.report({
+            node: directive,
+            messageId: "unusedDirective",
+            data: { component: componentName },
+            fix: (fixer) => fixer.removeRange([start, end]),
+          });
+          return;
+        }
         const tags = [...new Set(islands.map((i) => `<${i.rootTag}>`))].join(", ");
         context.report({
           node: directive,

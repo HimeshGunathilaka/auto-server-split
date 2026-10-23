@@ -1,5 +1,6 @@
 test/fixtures
 test/eslint-project
+test/eslint-directive-project
 e2e/apps
 dist
 pnpm-lock.yaml

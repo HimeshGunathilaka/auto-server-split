@@ -18,10 +18,10 @@ function run(args: string[], cwd = dir) {
   return { code: r.status, stdout: r.stdout, stderr: r.stderr };
 }
 
-function freshCopy(git: boolean) {
+function freshCopy(git: boolean, from = fixture) {
   dir = path.join(tmpRoot, `cli-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   mkdirSync(dir, { recursive: true });
-  cpSync(fixture, dir, { recursive: true });
+  cpSync(from, dir, { recursive: true });
   if (git) {
     const g = (...args: string[]) => execFileSync("git", args, { cwd: dir, stdio: "ignore" });
     g("init", "-q");
@@ -51,6 +51,20 @@ describe("CLI", () => {
     freshCopy(false);
     expect(run(["PostCard.tsx", "--check"]).code).toBe(2);
     expect(run(["app/page.tsx", "--check"]).code).toBe(0);
+  });
+
+  it("--remove-unused-directives removes a directive, and the next pass splits what it imports", () => {
+    freshCopy(false, path.join(repo, "test/fixtures/35-remove-unused-directive/input"));
+    const r = run([".", "--remove-unused-directives", "--no-measure"]);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain(
+      '✔ removed "use client" components/Sidebar.tsx · no client-only code',
+    );
+    expect(r.stdout).toContain("✔ split components/PostCard.tsx");
+    expect(r.stdout).toContain("files split:    1 (dry run, nothing written)");
+    expect(r.stdout).toContain("directives removed: 1 (dry run, nothing written)");
+    expect(run([".", "--check", "--no-measure"]).code).toBe(0);
+    expect(run([".", "--check", "--no-measure", "--remove-unused-directives"]).code).toBe(2);
   });
 
   it("--json prints the API result shape", () => {

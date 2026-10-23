@@ -129,8 +129,8 @@ export function analyzeForLint(args: {
     run.measurer ??= new BundleMeasurer(root, run.graph, run.loaded.configFile);
     // Computed once per lint process: the splits the CLI would propose for the whole project.
     run.estimate ??= estimateSavings(run, [], new Set(), load);
-    const { originalText, islandFile, islandText } = analyzed.value;
-    const saving = run.estimate.outcome({ file, originalText, islandFile, islandText });
+    const { originalText, island } = analyzed.value;
+    const saving = run.estimate.outcome({ file, originalText, ...(island ? { island } : {}) });
     if (!saving.ok) return saving;
   }
   return analyzed;

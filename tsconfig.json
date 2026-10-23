@@ -19,5 +19,5 @@
     "noUnusedParameters": true
   },
   "include": ["src", "test", "tsup.config.ts", "vitest.config.ts"],
-  "exclude": ["test/fixtures", "test/eslint-project", "test/.tmp"]
+  "exclude": ["test/fixtures", "test/eslint-project", "test/eslint-directive-project", "test/.tmp"]
 }

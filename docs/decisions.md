@@ -497,3 +497,63 @@ A second run listed every generated `X.client.tsx` as a skip (`fully-interactive
 - `--interactive` counted declined splits as split (`files split: 2 (1 written)`). The summary now
   counts the applied ones and lists the rest as `files declined`.
 - A helper component moved whole into the island file keeps its own name; the README now says so.
+
+## Unreleased — fewer manual steps, fewer skips
+
+### Removing unused directives is opt-in
+
+A `"use client"` file with no client-only code used to be skipped as `no-islands`, with a note
+that the directive may be unnecessary. `removeUnusedDirectives` (and `--remove-unused-directives`)
+now removes it. The analysis is the one a split gets up to the point where it finds no island:
+importers (every one a server module rendering `<X />`), module-level code, env vars, side-effect
+imports. The self-check runs on the result with no island file: no new diagnostics in the file or
+its importers, no client-only code left, serializable props for every Client Component the file
+renders. It stays off by default: a removed directive is a different kind of change from a split,
+and a file can be marked `"use client"` on purpose (for example to keep a heavy component out of
+the server bundle), which the analysis can't tell from an oversight.
+
+`minBytesSaved` and `minStaticRatio` exist to keep small splits from adding a file and an import
+for little gain. A removed directive adds nothing, so neither applies; the saving is still
+estimated (the file's bundle against nothing, with the same shared-code accounting) and reported.
+The result gets its own status, `"directive-removed"`, rather than `"split"` with no islands, so
+JSON consumers and the summary can tell the two apart.
+
+The ESLint rule gets its first fix for this case: it only edits the linted file. Splits stay
+report-only (see [No autofix](#no-autofix)).
+
+### Passes instead of "run it again"
+
+The README used to ask users to rerun the tool until nothing new was split, because a split can
+make another file splittable (a component imported only by a client component that is split). A
+run now does that itself. Only files skipped as `imported-by-client` can change between passes, so
+only they are held back and analysed again; every other result is reported when it's made. The
+next pass applies the last pass's outputs to the same ts-morph project in memory, including the
+new island files, and rebuilds the module graph with a resolution host that sees those files.
+Nothing is written in between, so a dry run shows the final result, and each file is reported
+once. Size estimates in later passes still bundle a candidate's imports from disk (esbuild's
+synchronous API has no plugins to serve the in-memory files), which can only affect a dependency
+shared with an earlier pass's split. Passes stop when one changes nothing, at 10 at most.
+
+`--interactive` makes one pass: the user accepts each change separately, and a later pass would
+assume the earlier changes were accepted. `rerun()` (used by interactive renames) refuses after a
+multi-pass run, because later passes change the project the first pass analysed.
+
+### Component values render on the server
+
+next-learn's `nav-links.tsx` was skipped as `non-serializable-prop`: its links carry an icon
+component (`icon: HomeIcon`) that the list item renders as `<LinkIcon className="w-6" />`. Two
+changes split it:
+
+- A static element that renders a component held in a variable (a parameter, a body variable or a
+  callback variable) is a donut slot even when it's a single element. The function can't cross
+  the boundary as a prop, but the rendered element can.
+- Field picking also applies to objects that aren't serializable as a whole: when the island reads
+  only fields that are (`link.href`, `link.name`), only those cross. Before, picking only made a
+  serializable prop smaller.
+
+### Smaller fixes
+
+- A list item's `key` attribute on a line of its own no longer leaves a blank line in the island.
+- `output-exists` and `would-create-route` are checked after the analysis, since a removed
+  directive creates no file. A file with an existing island file and another problem now reports
+  the other problem.

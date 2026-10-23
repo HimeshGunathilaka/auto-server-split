@@ -65,4 +65,31 @@ describe("interactive review", () => {
     const { printed } = await review(["r", "Toolbar", "", "n"]);
     expect(printed).toContain("already used");
   });
+
+  it("asks about a removed directive without offering a rename", async () => {
+    const root = path.resolve(import.meta.dirname, "fixtures/35-remove-unused-directive/input");
+    const report = await runSplit({
+      root,
+      measure: false,
+      noConfigFile: true,
+      iterate: false,
+      config: { minBytesSaved: 0, removeUnusedDirectives: true },
+    });
+    const input = new PassThrough();
+    const output = new PassThrough();
+    let printed = "";
+    output.on("data", (d) => (printed += String(d)));
+    input.end("r\ny\n");
+    const accepted = await reviewInteractively(report.files, report.rerun, {
+      input,
+      output,
+      colorDiff: (d) => d,
+      describe: (f) => `FILE ${f.file}`,
+    });
+    expect(printed).toContain("Remove the directive? [y]es / [n]o / [d]iff / [q]uit");
+    expect(printed).toContain("Please answer y, n, d or q.");
+    expect(accepted.map((f) => `${f.file}:${f.status}`)).toEqual([
+      "components/Sidebar.tsx:directive-removed",
+    ]);
+  });
 });
