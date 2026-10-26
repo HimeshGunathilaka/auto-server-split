@@ -255,3 +255,15 @@ module). Nothing is written. Please report it with the message.
 
 The file couldn't be parsed, or the tool hit a bug. The run continues with the other files; run with
 `--verbose` for a stack trace and please report it.
+
+## `ignored`
+
+The file has an `auto-server-split-ignore` comment in its header (before the first import, or on
+the directive's line), so it's left as it is, and size estimates don't assume it's split. The
+message repeats the reason written after the comment, if any:
+
+```tsx
+"use client"; // auto-server-split-ignore: keeps the chart library out of the server bundle
+```
+
+**To fix:** nothing to do; remove the comment to have the file analysed again.

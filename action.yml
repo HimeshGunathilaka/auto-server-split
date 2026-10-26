@@ -1,0 +1,63 @@
+name: auto-server-split
+description: Check a Next.js app for "use client" components that can be split into a Server Component plus client islands.
+author: Himesh Gunathilake
+branding:
+  icon: scissors
+  color: green
+
+inputs:
+  working-directory:
+    description: The project root (where tsconfig.json lives), relative to the repository.
+    default: .
+  paths:
+    description: Files or directories to check, separated by spaces (default, the config's include globs).
+    default: ""
+  since:
+    description: Only check files changed since this git ref, e.g. origin/main. Needs that ref fetched (actions/checkout with fetch-depth 0).
+    default: ""
+  baseline:
+    description: A baseline file (written with --write-baseline) whose files are left as they are.
+    default: ""
+  version:
+    description: The auto-server-split version to run. Empty runs the project's own installed copy.
+    default: ""
+  fail-on-changes:
+    description: Fail the step when a change is available.
+    default: "true"
+  args:
+    description: Extra command-line arguments, e.g. --remove-unused-directives.
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: auto-server-split --check
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        AUTO_SPLIT_PATHS: ${{ inputs.paths }}
+        AUTO_SPLIT_SINCE: ${{ inputs.since }}
+        AUTO_SPLIT_BASELINE: ${{ inputs.baseline }}
+        AUTO_SPLIT_VERSION: ${{ inputs.version }}
+        AUTO_SPLIT_FAIL: ${{ inputs.fail-on-changes }}
+        AUTO_SPLIT_ARGS: ${{ inputs.args }}
+      run: |
+        args=(--check --format github)
+        if [ -n "$AUTO_SPLIT_SINCE" ]; then args+=(--since "$AUTO_SPLIT_SINCE"); fi
+        if [ -n "$AUTO_SPLIT_BASELINE" ]; then args+=(--baseline "$AUTO_SPLIT_BASELINE"); fi
+        if [ -n "$AUTO_SPLIT_VERSION" ]; then
+          runner=(npx --yes "auto-server-split@$AUTO_SPLIT_VERSION")
+        else
+          runner=(npx --no-install auto-server-split)
+        fi
+        set +e
+        # Paths and extra arguments are word-split on purpose.
+        # shellcheck disable=SC2086
+        "${runner[@]}" $AUTO_SPLIT_PATHS "${args[@]}" $AUTO_SPLIT_ARGS
+        code=$?
+        set -e
+        if [ "$code" -eq 2 ] && [ "$AUTO_SPLIT_FAIL" != "true" ]; then
+          echo "Changes are available (fail-on-changes is off)."
+          exit 0
+        fi
+        exit "$code"

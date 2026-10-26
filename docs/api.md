@@ -13,17 +13,19 @@ import type {
 
 ## `split(options?: SplitOptions): Promise<SplitResult>`
 
-| Option         | Type                           | Default          | Meaning                                                                                                                                            |
-| -------------- | ------------------------------ | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `root`         | `string`                       | `process.cwd()`  | Project root (where `tsconfig.json`/`jsconfig.json` lives). Without one, Next.js defaults are used and every source file under the root is loaded. |
-| `paths`        | `string[]`                     | config `include` | Files or directories to consider, relative to `root`.                                                                                              |
-| `write`        | `boolean`                      | `false`          | Write the outputs. The API doesn't check git state; the CLI does.                                                                                  |
-| `config`       | `UserConfig`                   | `{}`             | Overrides the config file. Validated like a config file: unknown keys and invalid values reject with a `ConfigError`.                              |
-| `configFile`   | `string`                       | auto             | Config file path relative to `root`.                                                                                                               |
-| `noConfigFile` | `boolean`                      | `false`          | Ignore config files on disk.                                                                                                                       |
-| `measure`      | `boolean`                      | `true`           | Run the esbuild size measurement. When `false`, `bytesSaved` is omitted and `minBytesSaved` isn't applied.                                         |
-| `iterate`      | `boolean`                      | `true`           | Repeat the analysis until nothing new can change (see [Passes](#passes)). `false` makes one pass.                                                  |
-| `onFile`       | `(result: FileResult) => void` |                  | Called as soon as each file is done. With measuring on, splits are done only after every file is analysed, since savings are estimated together.   |
+| Option         | Type                           | Default          | Meaning                                                                                                                                                     |
+| -------------- | ------------------------------ | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `root`         | `string`                       | `process.cwd()`  | Project root (where `tsconfig.json`/`jsconfig.json` lives). Without one, Next.js defaults are used and every source file under the root is loaded.          |
+| `paths`        | `string[]`                     | config `include` | Files or directories to consider, relative to `root`.                                                                                                       |
+| `only`         | `string[]`                     |                  | Narrows the targets (from `paths` or `include`) to these files, relative to `root`. The CLI's `--since` passes the files changed since a git ref.           |
+| `baseline`     | `string[]`                     |                  | Files to leave as they are, relative to `root`: not analysed, and size estimates don't assume they're split. The CLI's `--baseline` reads them from a file. |
+| `write`        | `boolean`                      | `false`          | Write the outputs. The API doesn't check git state; the CLI does.                                                                                           |
+| `config`       | `UserConfig`                   | `{}`             | Overrides the config file. Validated like a config file: unknown keys and invalid values reject with a `ConfigError`.                                       |
+| `configFile`   | `string`                       | auto             | Config file path relative to `root`.                                                                                                                        |
+| `noConfigFile` | `boolean`                      | `false`          | Ignore config files on disk.                                                                                                                                |
+| `measure`      | `boolean`                      | `true`           | Run the esbuild size measurement. When `false`, `bytesSaved` is omitted and `minBytesSaved` isn't applied.                                                  |
+| `iterate`      | `boolean`                      | `true`           | Repeat the analysis until nothing new can change (see [Passes](#passes)). `false` makes one pass.                                                           |
+| `onFile`       | `(result: FileResult) => void` |                  | Called as soon as each file is done. With measuring on, splits are done only after every file is analysed, since savings are estimated together.            |
 
 ```ts
 type SplitResult = { files: FileResult[] };
@@ -42,6 +44,11 @@ type FileResult = {
   staticRatio: number; // share of JSX nodes that stay on the server, 0..1
   bytesSaved?: { isolated: number; conservative: number; sharedWith?: string[] }; // gzip bytes
   measureError?: string; // why bytesSaved is missing although measuring was on (only with minBytesSaved: 0)
+  warnings?: Array<{
+    code: WarningCode;
+    message: string;
+    location?: { line: number; column: number };
+  }>; // on changes only
   diff: string; // unified diff for every touched/created file
   outputs: Record<string, string>; // relative path -> new content
 };
@@ -115,6 +122,18 @@ dependency of an earlier pass's split counts as it was before that split.
 
 The CLI's `--interactive` mode makes one pass, since you accept each change separately; run it
 again for the rest. The `rerun()` function it uses needs a single-pass run.
+
+## Warnings
+
+A change can carry `warnings`: risks the tool reports without refusing the change. `WARNING_CODES`
+lists the codes; like skip codes, they're stable.
+
+- `timezone-dependent`: code that formats or reads a date in the local timezone used to run in the
+  browser and now renders on the server: date-fns formatting and calendar functions (`format`,
+  `formatDistance`, `isToday`, `startOfDay`...), `.format()` on a dayjs or moment value without
+  `.tz()`, `.utc()` or `.utcOffset()` earlier in the chain, and `Date`'s local getters
+  (`getHours()`, `getDate()`, `toDateString()`...). The `getUTC*()` methods and date-fns-tz don't
+  warn. At most five per file; the last one counts the rest.
 
 ## `SKIP_CODES` and `SKIP_TITLES`
 

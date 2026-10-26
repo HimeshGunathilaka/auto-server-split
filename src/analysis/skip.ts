@@ -27,6 +27,7 @@ export const SKIP_CODES = [
   "self-check-failed",
   "parse-error",
   "internal-error",
+  "ignored",
 ] as const;
 
 export type SkipCode = (typeof SKIP_CODES)[number];
@@ -65,6 +66,7 @@ export const SKIP_TITLES: Record<SkipCode, string> = {
   "self-check-failed": "the generated code failed the self-check",
   "parse-error": "the file could not be parsed",
   "internal-error": "internal error (please report)",
+  ignored: "opted out with an auto-server-split-ignore comment",
 };
 
 /** Expected skips are values, never exceptions. Analysis steps return `Outcome<T>`. */

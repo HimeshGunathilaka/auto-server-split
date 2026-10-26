@@ -4,6 +4,9 @@ import { createTwoFilesPatch } from "diff";
 import fg from "fast-glob";
 import { ts } from "ts-morph";
 import { analyzeFileShape } from "./analysis/components.js";
+import { findIgnoreComment } from "./analysis/directives.js";
+import type { Warning } from "./analysis/timezone.js";
+import { findTimezoneWarnings } from "./analysis/timezone.js";
 import type { AnalysisContext } from "./analysis/context.js";
 import { locOf } from "./analysis/context.js";
 import type { FrameworkAdapter } from "./analysis/framework.js";
@@ -46,6 +49,8 @@ export type RunContext = {
   measurer: BundleMeasurer | undefined;
   /** The splits the run's size estimates assume (see estimateSavings), once computed. */
   estimate?: SavingsEstimate;
+  /** Files left as they are (a `--check` baseline): never targets, never assumed split. */
+  baseline?: ReadonlySet<string>;
 };
 
 type Saving = Pick<FileResult, "bytesSaved" | "measureError">;
@@ -57,6 +62,7 @@ type Planned = {
   staticRatio: number;
   originalText: string;
   candidate: SplitCandidate;
+  warnings: Warning[];
 };
 
 /** Builds the shared state for one run: project, module graph, classifiers. Synchronous. */
@@ -134,13 +140,17 @@ export async function runSplit(options: SplitOptions = {}): Promise<
   const iterate = options.iterate !== false;
 
   const run = createRunContext(root, config);
+  if (options.baseline) run.baseline = new Set(options.baseline.map((f) => path.resolve(root, f)));
   const Measurer =
     options.measure === false
       ? undefined
       : (await import("./measure/bundleSize.js")).BundleMeasurer;
   if (Measurer) run.measurer = new Measurer(root, run.graph, run.loaded.configFile);
 
-  const targets = selectTargets(root, options.paths, config);
+  const only = options.only && new Set(options.only.map((f) => path.resolve(root, f)));
+  const targets = selectTargets(root, options.paths, config, run.baseline).filter(
+    (file) => !only || only.has(file),
+  );
   const results = new Map<string, FileResult>();
   const report = (file: string, result: FileResult) => {
     results.set(file, result);
@@ -254,7 +264,7 @@ function nextPassContext(run: RunContext, outputs: ReadonlyMap<string, string>):
     else loaded.project.createSourceFile(file, text);
   }
   loaded.overlay = new Map([...(loaded.overlay ?? []), ...outputs]);
-  return contextFor(run.root, run.config, loaded);
+  return { ...contextFor(run.root, run.config, loaded), baseline: run.baseline };
 }
 
 /** The "use client" files a run targets: `paths`, or the config's `include` globs. */
@@ -262,6 +272,7 @@ function selectTargets(
   root: string,
   paths: string[] | undefined,
   config: ResolvedConfig,
+  baseline: ReadonlySet<string> = new Set(),
 ): string[] {
   const ignore = [...IGNORE_GLOBS, ...config.exclude];
   const sourceGlob = "**/*.{tsx,jsx,ts,js,mts,mjs}";
@@ -284,7 +295,9 @@ function selectTargets(
     );
   }
   return [...new Set(files.map((f) => path.resolve(f)))]
-    .filter((f) => /\.(tsx|jsx|ts|js|mts|mjs)$/.test(f) && !isIslandFile(f, config))
+    .filter(
+      (f) => /\.(tsx|jsx|ts|js|mts|mjs)$/.test(f) && !isIslandFile(f, config) && !baseline.has(f),
+    )
     .sort();
 }
 
@@ -346,6 +359,7 @@ function changeResult(run: RunContext, file: string, value: Planned, saving: Sav
     staticRatio: value.staticRatio,
     ...(saving.bytesSaved ? { bytesSaved: saving.bytesSaved } : {}),
     ...(saving.measureError ? { measureError: saving.measureError } : {}),
+    ...(value.warnings.length > 0 ? { warnings: value.warnings } : {}),
     diff,
     outputs: value.outputs,
   };
@@ -366,6 +380,8 @@ export type Analyzed = {
   originalText: string;
   /** Name of the main component (the default export, else the first exported one). */
   componentName: string;
+  /** Risks the change carries without being refused (code that now renders on the server). */
+  warnings: Warning[];
 };
 
 /** Analysis + rewrite, without formatting, self-check or measurement. Synchronous. */
@@ -393,6 +409,17 @@ export function analyzeFile(
   const program = loaded.project.getProgram().compilerObject;
   const sf = program.getSourceFile(file);
   if (!sf) return skip("parse-error", "the file could not be loaded");
+  const ignore = findIgnoreComment(sf);
+  if (ignore) {
+    const lc = sf.getLineAndCharacterOfPosition(ignore.pos);
+    return skip(
+      "ignored",
+      ignore.reason
+        ? `opted out with an auto-server-split-ignore comment: ${ignore.reason}`
+        : "opted out with an auto-server-split-ignore comment",
+      { line: lc.line + 1, column: lc.character + 1 },
+    );
+  }
   const syntax = program.getSyntacticDiagnostics(sf)[0];
   if (syntax) {
     const lc = sf.getLineAndCharacterOfPosition(syntax.start ?? 0);
@@ -516,6 +543,7 @@ export function analyzeFile(
       isJs,
       originalText: sf.text,
       componentName,
+      warnings: findTimezoneWarnings(ctx, () => true),
     });
   }
   if (components.every((c) => wholesale.has(c) || c.exported === "none") && plans.length === 0) {
@@ -540,6 +568,26 @@ export function analyzeFile(
       `only ${Math.round(staticRatio * 100)}% of the JSX would stay on the server (minStaticRatio is ${Math.round(config.minStaticRatio * 100)}%)`,
     );
   }
+
+  // Code outside the islands (and inside their server-rendered slots) now runs on the server only.
+  const toIsland: ts.Node[] = [...wholesale].map((c) => c.statement);
+  const serverSlots: ts.Node[] = [];
+  for (const plan of plans) {
+    for (const island of plan.islands) {
+      toIsland.push(island.root.node);
+      serverSlots.push(...island.slots.map((slot) => slot.j.node));
+    }
+    for (const unit of plan.removedUnits) toIsland.push(unit.node);
+    for (const decl of plan.movedModuleDecls) toIsland.push(decl.statement);
+  }
+  const within = (outer: ts.Node, node: ts.Node) =>
+    node.getStart(sf) >= outer.getStart(sf) && node.getEnd() <= outer.getEnd();
+  const warnings = findTimezoneWarnings(
+    ctx,
+    (node) =>
+      serverSlots.some((slot) => within(slot, node)) ||
+      !toIsland.some((moved) => within(moved, node)),
+  );
 
   // ---- output location --------------------------------------------------------------------------
   if (existsSync(islandFile) || loaded.project.getSourceFile(islandFile)) {
@@ -613,6 +661,7 @@ export function analyzeFile(
     isJs,
     originalText: sf.text,
     componentName,
+    warnings,
   });
 }
 
@@ -670,6 +719,7 @@ async function planFile(
     staticRatio: a.staticRatio,
     originalText: a.originalText,
     candidate: { file, originalText: a.originalText, ...(island ? { island } : {}) },
+    warnings: a.warnings,
   });
 }
 
@@ -701,7 +751,7 @@ export function estimateSavings(
   const { measurer, config } = run;
   if (!measurer) return { outcome: () => ok({}) };
   const candidates = new Map(planned.map((c) => [c.file, c]));
-  for (const file of selectTargets(run.root, undefined, config)) {
+  for (const file of selectTargets(run.root, undefined, config, run.baseline)) {
     if (candidates.has(file) || decided.has(file)) continue;
     if (run.graph.nodes.get(file)?.directive !== "use client") continue;
     try {

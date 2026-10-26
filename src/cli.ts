@@ -1,10 +1,18 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { defineCommand, runMain } from "citty";
 import pc from "picocolors";
 import { ConfigError } from "./config/config.js";
+import { githubAnnotations, markdownReport } from "./report.js";
 import { formatBytes, isChange, runSplit } from "./split.js";
 import { summaryLines } from "./summary.js";
 import type { FileResult } from "./types.js";
@@ -37,7 +45,20 @@ function savedText(file: FileResult, assumes = ""): string {
       : "";
 }
 
+function describeWarnings(file: FileResult): string {
+  return (file.warnings ?? [])
+    .map((w) => {
+      const loc = w.location ? `:${w.location.line}:${w.location.column}` : "";
+      return `\n    ${pc.yellow("⚠")} ${file.file}${loc} ${pc.dim(`[${w.code}]`)} ${w.message}`;
+    })
+    .join("");
+}
+
 function describeChange(file: FileResult): string {
+  return describeChangeLine(file) + describeWarnings(file);
+}
+
+function describeChangeLine(file: FileResult): string {
   if (file.status === "directive-removed")
     return `${pc.green('✔ removed "use client"')} ${pc.bold(file.file)} · no client-only code${savedText(file)}`;
   const islands = file.islands.map(
@@ -92,6 +113,39 @@ function dirtyFiles(cwd: string, files: string[]): string[] | undefined {
   }
 }
 
+/**
+ * Files changed since `ref` (committed on this branch since it forked, modified, or untracked),
+ * relative to `root`. Undefined when git can't tell (not a repository, unknown ref, shallow clone).
+ */
+function changedFiles(root: string, ref: string): string[] | undefined {
+  const git = (...args: string[]) =>
+    execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  try {
+    const out = [
+      git("diff", "--name-only", "--relative", "--diff-filter=ACMR", `${ref}...HEAD`),
+      git("diff", "--name-only", "--relative", "--diff-filter=ACMR", "HEAD"),
+      git("ls-files", "--others", "--exclude-standard"),
+    ];
+    return [...new Set(out.join("\n").split("\n").filter(Boolean))];
+  } catch {
+    return undefined;
+  }
+}
+
+/** A baseline file's list of files (relative to the project root), or why it can't be read. */
+function readBaseline(file: string): { files: string[] } | { error: string } {
+  let data: unknown;
+  try {
+    data = JSON.parse(readFileSync(file, "utf8"));
+  } catch (error) {
+    return { error: (error as Error).message };
+  }
+  const files = (data as { files?: unknown } | null)?.files;
+  if (!Array.isArray(files) || !files.every((f) => typeof f === "string"))
+    return { error: 'expected { "files": ["path", ...] }' };
+  return { files };
+}
+
 const main = defineCommand({
   meta: {
     name: "auto-server-split",
@@ -115,7 +169,15 @@ const main = defineCommand({
       type: "boolean",
       description: "Review each proposed split ([y]es/[n]o/[r]ename/[d]iff/[q]uit)",
     },
-    json: { type: "boolean", description: "Print a machine-readable report" },
+    json: {
+      type: "boolean",
+      description: "Print a machine-readable report (same as --format json)",
+    },
+    format: {
+      type: "string",
+      description:
+        "Output: text (default), json, markdown (a report for PR comments), github (text plus annotations and a job summary)",
+    },
     config: {
       type: "string",
       description: "Config file (default: auto-split.config.* in the project root)",
@@ -124,6 +186,20 @@ const main = defineCommand({
     "allow-dirty": {
       type: "boolean",
       description: "Allow --write on files with uncommitted git changes",
+    },
+    since: {
+      type: "string",
+      description:
+        "Only files changed since this git ref (e.g. origin/main), plus uncommitted ones",
+    },
+    baseline: {
+      type: "string",
+      description:
+        "Leave the files listed in this baseline file as they are (see --write-baseline)",
+    },
+    "write-baseline": {
+      type: "string",
+      description: "Write the files that have a change available to this baseline file",
     },
     verbose: { type: "boolean", description: "Show stack traces for internal errors" },
     measure: {
@@ -156,11 +232,22 @@ const main = defineCommand({
     const paths = positional.map(
       (p) => path.relative(root, realpathSync(path.resolve(cwd, p))) || ".",
     );
+    const format = args.json ? "json" : (args.format ?? "text");
+    if (!["text", "json", "markdown", "github"].includes(format)) {
+      console.error(
+        pc.red(`auto-server-split: --format must be text, json, markdown or github, got ${format}`),
+      );
+      process.exitCode = EXIT_ERROR;
+      return;
+    }
     // --interactive writes the splits you accept, so it can't be a dry run.
-    if (args.interactive && (args["dry-run"] || args.json || args.check)) {
+    if (
+      args.interactive &&
+      (args["dry-run"] || args.check || format === "json" || format === "markdown")
+    ) {
       console.error(
         pc.red(
-          "auto-server-split: --interactive can't be combined with --dry-run, --json or --check",
+          "auto-server-split: --interactive can't be combined with --dry-run, --check, --json or --format markdown",
         ),
       );
       process.exitCode = EXIT_ERROR;
@@ -177,10 +264,45 @@ const main = defineCommand({
       process.exitCode = EXIT_ERROR;
       return;
     }
+    if (args["write-baseline"] && (args.write || args.interactive || args.baseline)) {
+      console.error(
+        pc.red(
+          "auto-server-split: --write-baseline can't be combined with --write, --interactive or --baseline",
+        ),
+      );
+      process.exitCode = EXIT_ERROR;
+      return;
+    }
+    if (args.since?.startsWith("-")) {
+      console.error(pc.red(`auto-server-split: --since needs a git ref, got ${args.since}`));
+      process.exitCode = EXIT_ERROR;
+      return;
+    }
+    const only = args.since === undefined ? undefined : changedFiles(root, args.since);
+    if (args.since !== undefined && !only) {
+      console.error(
+        pc.red(
+          `auto-server-split: can't list the files changed since ${args.since} (not a git repository, an unknown ref, or a shallow clone without it?)`,
+        ),
+      );
+      process.exitCode = EXIT_ERROR;
+      return;
+    }
+    let baseline: string[] | undefined;
+    if (args.baseline) {
+      const read = readBaseline(path.resolve(cwd, args.baseline));
+      if ("error" in read) {
+        console.error(pc.red(`auto-server-split: can't read ${args.baseline}: ${read.error}`));
+        process.exitCode = EXIT_ERROR;
+        return;
+      }
+      baseline = read.files;
+    }
     const verbose = Boolean(args.verbose);
-    const json = Boolean(args.json);
+    // json and markdown print one report at the end instead of the per-file text.
+    const quiet = format === "json" || format === "markdown";
     const log = (line = "") => {
-      if (!json) console.log(line);
+      if (!quiet) console.log(line);
     };
 
     let report;
@@ -188,6 +310,8 @@ const main = defineCommand({
       report = await runSplit({
         root,
         ...(paths.length > 0 ? { paths } : {}),
+        ...(only ? { only } : {}),
+        ...(baseline ? { baseline } : {}),
         write: false,
         ...(args.config ? { configFile: args.config } : {}),
         ...(args["remove-unused-directives"] ? { config: { removeUnusedDirectives: true } } : {}),
@@ -195,7 +319,7 @@ const main = defineCommand({
         // Interactive review accepts changes one by one, so a later pass can't build on them.
         iterate: !args.interactive,
         onFile: (file) => {
-          if (json || args.interactive) return;
+          if (quiet || args.interactive) return;
           if (isChange(file)) {
             log(describeChange(file));
             if (!args.check) log(colorDiff(file.diff));
@@ -265,8 +389,11 @@ const main = defineCommand({
       }
     }
 
-    if (json) {
+    const applied = Boolean(args.write || args.interactive);
+    if (format === "json") {
       console.log(JSON.stringify({ files }, null, 2));
+    } else if (format === "markdown") {
+      process.stdout.write(markdownReport(files, report.filesScanned, applied));
     } else {
       const mode = args.interactive
         ? "interactive"
@@ -277,6 +404,24 @@ const main = defineCommand({
             : "dry-run";
       const filesScanned = report.filesScanned;
       for (const line of summaryLines({ files, filesScanned, mode, splits, declined })) log(line);
+    }
+    if (format === "github") {
+      const workspace = process.env.GITHUB_WORKSPACE ?? cwd;
+      const repoPath = (file: string) =>
+        path.relative(workspace, path.join(root, file)).split(path.sep).join("/");
+      for (const line of githubAnnotations(files, repoPath)) console.log(line);
+      const summary = process.env.GITHUB_STEP_SUMMARY;
+      if (summary) appendFileSync(summary, markdownReport(files, report.filesScanned, applied));
+    }
+    if (args["write-baseline"]) {
+      const listed = splits.map((f) => f.file).sort();
+      writeFileSync(
+        path.resolve(cwd, args["write-baseline"]),
+        `${JSON.stringify({ files: listed }, null, 2)}\n`,
+      );
+      log(
+        `\nWrote ${listed.length} file${listed.length === 1 ? "" : "s"} to ${args["write-baseline"]}. Pass --baseline ${args["write-baseline"]} to leave them as they are.`,
+      );
     }
 
     if (files.some((f) => f.skipped?.code === "internal-error")) process.exitCode = EXIT_ERROR;

@@ -9,11 +9,11 @@ const fixture = path.join(repo, "test/fixtures/01-postcard-like-button/input");
 const tmpRoot = path.join(repo, "test/.tmp");
 let dir = "";
 
-function run(args: string[], cwd = dir) {
+function run(args: string[], cwd = dir, env: Record<string, string> = {}) {
   const r = spawnSync(process.execPath, [cli, ...args], {
     cwd,
     encoding: "utf8",
-    env: { ...process.env, NO_COLOR: "1" },
+    env: { ...process.env, NO_COLOR: "1", GITHUB_STEP_SUMMARY: "", ...env },
   });
   return { code: r.status, stdout: r.stdout, stderr: r.stderr };
 }
@@ -131,7 +131,7 @@ describe("CLI", () => {
       expect(r.code).toBe(1);
       // Rejected for the combination, before it even asks for a terminal.
       expect(r.stderr).toContain(
-        "--interactive can't be combined with --dry-run, --json or --check",
+        "--interactive can't be combined with --dry-run, --check, --json or --format markdown",
       );
     }
     expect(existsSync(path.join(dir, "PostCard.client.tsx"))).toBe(false);
@@ -180,6 +180,66 @@ describe("CLI", () => {
     expect(again.stdout).not.toContain("PostCard.client.tsx");
     expect(again.stdout).toContain('files scanned:  2 (0 with "use client")');
     expect(again.stdout).toContain("files skipped:  0");
+  });
+
+  it("--since checks only the files changed since a git ref", () => {
+    freshCopy(true);
+    const clean = run([".", "--since", "HEAD", "--check", "--no-measure"]);
+    expect(clean.code).toBe(0);
+    expect(clean.stdout).toContain('files scanned:  0 (0 with "use client")');
+    writeFileSync(
+      path.join(dir, "PostCard.tsx"),
+      `${readFileSync(path.join(dir, "PostCard.tsx"), "utf8")}// edit\n`,
+    );
+    const changed = run([".", "--since", "HEAD", "--check", "--no-measure"]);
+    expect(changed.code).toBe(2);
+    expect(changed.stdout).toContain('files scanned:  1 (1 with "use client")');
+    expect(run([".", "--since", "no-such-ref"]).stderr).toContain("can't list the files changed");
+    expect(run([".", "--since", "--output=x"]).code).toBe(1);
+  });
+
+  it("--write-baseline records the available changes, and --baseline leaves them alone", () => {
+    freshCopy(false);
+    const written = run([".", "--no-measure", "--write-baseline", "base.json"]);
+    expect(written.stdout).toContain("Wrote 1 file to base.json");
+    expect(JSON.parse(readFileSync(path.join(dir, "base.json"), "utf8"))).toEqual({
+      files: ["PostCard.tsx"],
+    });
+    expect(run([".", "--check", "--no-measure", "--baseline", "base.json"]).code).toBe(0);
+    expect(run([".", "--check", "--no-measure"]).code).toBe(2);
+    writeFileSync(path.join(dir, "bad.json"), '{ "files": "PostCard.tsx" }');
+    const bad = run([".", "--baseline", "bad.json"]);
+    expect(bad.code).toBe(1);
+    expect(bad.stderr).toContain('expected { "files": ["path", ...] }');
+  });
+
+  it("--format markdown prints one report for a pull request comment", () => {
+    freshCopy(false);
+    const r = run([".", "--format", "markdown", "--no-measure"]);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toMatch(/^## auto-server-split\n/);
+    expect(r.stdout).toContain("| `PostCard.tsx` | split | `PostCardButton` | – |");
+    expect(r.stdout).toContain("`PostCard.tsx:13`: format() from date-fns");
+    expect(r.stdout).not.toContain("files scanned:");
+  });
+
+  it("--format github adds annotations and appends the report to the job summary", () => {
+    freshCopy(false);
+    const summary = path.join(dir, "summary.md");
+    const r = run([".", "--format", "github", "--no-measure"], dir, {
+      GITHUB_STEP_SUMMARY: summary,
+      GITHUB_WORKSPACE: path.dirname(dir),
+    });
+    const prefix = path.basename(dir);
+    expect(r.stdout).toContain(
+      `::notice file=${prefix}/PostCard.tsx,line=15,title=Split available::80%25 static`,
+    );
+    expect(r.stdout).toContain(
+      `::warning file=${prefix}/PostCard.tsx,line=13,title=timezone-dependent::format() from date-fns`,
+    );
+    expect(r.stdout).toContain("files scanned:");
+    expect(readFileSync(summary, "utf8")).toContain("## auto-server-split");
+    expect(run([".", "--format", "yaml"]).stderr).toContain("--format must be text, json");
   });
 
   it("exits 1 for a path that does not exist", () => {

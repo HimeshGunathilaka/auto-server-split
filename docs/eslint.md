@@ -24,7 +24,8 @@ same size measurement, so it only reports files that `npx auto-server-split <fil
 Like the CLI's, its size estimate assumes the other splits the CLI proposes for the project (the
 `"use client"` files in the config's `include`) are applied too. It works that set out once per
 ESLint process, the first time it measures a file, which analyses and bundles each of those files
-once. Generated island files (`X.client.tsx`) are never reported.
+once. Generated island files (`X.client.tsx`) and files with an `auto-server-split-ignore` comment
+are never reported.
 
 Options:
 

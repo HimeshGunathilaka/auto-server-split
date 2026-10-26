@@ -30,11 +30,13 @@ src/
   cli.ts               the auto-server-split command
   interactive.ts       --interactive review
   summary.ts           the CLI's closing summary
+  report.ts            --format markdown and github (annotations, job summary)
   split.ts             per-run orchestration (project, graph, per-file pipeline)
   types.ts             public types
   config/              config file loading and validation
   project/             ts-morph project, module graph, package classification (all I/O)
-  analysis/            pure analysis: directives, components, taint, islands, serializability, skips
+  analysis/            pure analysis: directives, components, taint, islands, serializability,
+                       skips, timezone warnings
   frameworks/next.ts   everything Next.js-specific
   transform/           rewrite and island emission (magic-string), Prettier
   verify/              the self-check that runs before anything is reported or written
@@ -49,6 +51,7 @@ test/
                        size measurement, line endings, ESLint rule, and ESLint/CLI parity
 e2e/                   e2e harness and the Next.js apps it builds
 scripts/               perf and benchmark scripts
+action.yml             the GitHub Action (runs --check --format github)
 docs/                  user docs, design decisions, benchmarks
 ```
 

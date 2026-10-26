@@ -8,7 +8,14 @@
 // <os tmpdir>/auto-server-split-bench), so their own lockfiles and node_modules are used.
 // Dependencies are installed with lifecycle scripts disabled.
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -222,7 +229,10 @@ for (const app of APPS.filter((a) => only.length === 0 || only.includes(a.slug))
         ),
       ]
         .slice(0, 3)
-        .join(" / ");
+        .join(" / ")
+        // Paths under the work directory differ per machine; keep them out of the report.
+        .replaceAll(realpathSync(workDir), "<work dir>")
+        .replaceAll(workDir, "<work dir>");
     result.typecheck = { written, newErrors: tscAdded };
     result.build = {
       before: before.ok,

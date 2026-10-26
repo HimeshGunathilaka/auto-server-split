@@ -1,6 +1,8 @@
 import type { Skip } from "./analysis/skip.js";
+import type { Warning } from "./analysis/timezone.js";
 
 export type { Skip, SkipCode, SourceLocation } from "./analysis/skip.js";
+export type { Warning, WarningCode } from "./analysis/timezone.js";
 
 export type IslandInfo = {
   name: string;
@@ -34,6 +36,11 @@ export type FileResult = {
    * splits with `minBytesSaved: 0` get here; otherwise the file is skipped as `measure-failed`.
    */
   measureError?: string;
+  /**
+   * Risks the change carries that don't make the tool skip it, for example date formatting that
+   * now renders in the server's timezone. Only on changes.
+   */
+  warnings?: Warning[];
   /** Unified diff covering all touched/created files. */
   diff: string;
   /** Project-relative path -> new content, for every touched or created file. */
@@ -79,6 +86,16 @@ export type SplitOptions = {
   root?: string;
   /** Files or directories to consider, relative to root. Defaults to the config `include`. */
   paths?: string[];
+  /**
+   * Narrows the targets (from `paths` or `include`) to these files, relative to root. The CLI's
+   * `--since` passes the files changed since a git ref.
+   */
+  only?: string[];
+  /**
+   * Files to leave as they are, relative to root: they're not analysed, and size estimates don't
+   * assume they're split. The CLI's `--baseline` reads them from a file.
+   */
+  baseline?: string[];
   /** Write the outputs to disk. Default false. */
   write?: boolean;
   /** Overrides for the config file. */

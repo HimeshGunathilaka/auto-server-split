@@ -111,7 +111,7 @@ npx auto-server-split --help
    - Read the diff: the rewritten `X.tsx` files and the new `X.client.tsx` files.
    - Run your build, type checker and tests.
    - Click through the affected pages, especially the interactive parts.
-   - Look for timezone-dependent output, such as dates formatted with a library (`format(date, "PPP")`). That code now runs on the server, which may use a different timezone from your users' browsers. (`toLocaleString()`, `Intl` and `localeCompare()` without an explicit locale stay in islands.)
+   - Check the `⚠ [timezone-dependent]` warnings. Date formatting that used to run in the browser (`format(date, "PPP")` from date-fns, `.format()` on a dayjs or moment value, `Date`'s local getters such as `getHours()`) now runs on the server, which may use a different timezone from your users' browsers. The tool flags the cases it recognises; look for others. (`toLocaleString()`, `Intl` and `localeCompare()` without an explicit locale stay in islands.)
 5. **Chained splits are included.** Splitting a file can make another file splittable: a component that was only imported by a client component becomes splittable once that importer turns into a Server Component. A run analyses those files again, in memory, until nothing new changes, so one run (even a dry run) shows the whole result. `--interactive` makes a single pass, so run it again after accepting changes. The generated `X.client.tsx` files aren't scanned, so they never show up as skips.
 6. **Look at the skips.** Some point to a small refactor that makes the file splittable (for example `exports-non-components` or `context-provider`). Others, such as `fully-interactive`, mean the component belongs on the client. `no-islands` means the file has no client-only code at all: pass `--remove-unused-directives` (or set `removeUnusedDirectives`) to have the tool remove its `"use client"`. [docs/skip-reasons.md](docs/skip-reasons.md) has a fix for each.
 7. **Keep it from regressing** with the [ESLint rule](#eslint) in the editor and [`--check` in CI](#ci).
@@ -127,7 +127,8 @@ git restore components/PostCard.tsx && rm components/PostCard.client.tsx
 ## CLI
 
 ```bash
-npx auto-server-split <paths...> [--dry-run | --write | --check] [--interactive] [--json]
+npx auto-server-split <paths...> [--dry-run | --write | --check] [--interactive] [--format <f> | --json]
+                                 [--since <ref>] [--baseline <file>] [--write-baseline <file>]
                                  [--config <file>] [--root <dir>] [--allow-dirty] [--verbose] [--no-measure]
                                  [--remove-unused-directives]
 ```
@@ -140,6 +141,10 @@ npx auto-server-split <paths...> [--dry-run | --write | --check] [--interactive]
 | `--allow-dirty`              | Lets `--write` and `--interactive` write files that have uncommitted changes, are untracked or git-ignored, or are outside a git repository.                                                                                                                                              |
 | `--interactive`              | Walks through each proposed split: `[y]es / [n]o / [r]ename islands / [d]iff / [q]uit`, then writes the accepted ones (same git checks as `--write`). Renames go back through the engine and its self-check. Needs a terminal; can't be combined with `--dry-run`, `--json` or `--check`. |
 | `--json`                     | Machine-readable report with the same shape as the API result.                                                                                                                                                                                                                            |
+| `--format <f>`               | `text` (default), `json`, `markdown` (one report, for a pull request comment) or `github` (the text output plus [annotations](#ci) on the changed lines, and the markdown report appended to `$GITHUB_STEP_SUMMARY`).                                                                     |
+| `--since <ref>`              | Only the files changed since a git ref (committed on this branch since it forked from `<ref>`, modified, or untracked), e.g. `--since origin/main` in a pull request. Size estimates still cover the whole project.                                                                       |
+| `--baseline <file>`          | Leaves the files listed in a baseline file as they are: not analysed, and not assumed split by the estimates. For adopting `--check` in an existing app.                                                                                                                                  |
+| `--write-baseline <file>`    | Writes the files that have a change available to a baseline file (`{ "files": [...] }`). Changes nothing else.                                                                                                                                                                            |
 | `--config <file>`            | Config file (default: `auto-split.config.{ts,mts,mjs,js,json}` in the project root).                                                                                                                                                                                                      |
 | `--root <dir>`               | Project root, where `tsconfig.json` lives (default: the current directory).                                                                                                                                                                                                               |
 | `--no-measure`               | Skips the esbuild size measurement (faster; `minBytesSaved` isn't applied, and no saving is reported).                                                                                                                                                                                    |
@@ -162,6 +167,31 @@ The summary lists files scanned, files split, files skipped grouped by reason, a
 ```
 
 To report splits without failing the build, add `continue-on-error: true` to the step. The output lists each available split and its estimated saving either way.
+
+On GitHub, the repository's action runs `--check --format github`: each available split gets an annotation on its file, each timezone warning a warning annotation, and the job summary gets the markdown report. It runs the project's own installed copy unless you set `version`.
+
+```yaml
+# .github/workflows/auto-split.yml
+on: pull_request
+jobs:
+  auto-split:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # --since needs the base branch
+      - uses: actions/setup-node@v4
+      - run: npm ci
+      - uses: HimeshGunathilaka/auto-server-split@main # pin a release tag or commit SHA
+        with:
+          since: origin/${{ github.base_ref }} # only the files this pull request changes
+          # working-directory: apps/web
+          # baseline: auto-split.baseline.json
+          # fail-on-changes: false
+          # args: --remove-unused-directives
+```
+
+**Adopting `--check` in an existing app.** Record today's opportunities with `npx auto-server-split --write-baseline auto-split.baseline.json`, commit the file, and pass `--baseline auto-split.baseline.json` (the action's `baseline` input) in CI. Only new opportunities fail the check. Regenerate the file as you apply the listed ones. `--since` is the other way to scope CI: it checks only the files a pull request touches.
 
 ## API
 
@@ -226,6 +256,12 @@ export default defineConfig({
 
 Unknown keys are an error, in a config file and in the API's `config` option. See [docs/configuration.md](docs/configuration.md).
 
+**Opting a file out.** A comment in the file header leaves that file alone in the CLI, the API, the size estimates and the ESLint rule. It's reported as a skip (`ignored`) with the reason you give:
+
+```tsx
+"use client"; // auto-server-split-ignore: keeps the chart library out of the server bundle
+```
+
 ## Skip reasons
 
 Every skip has a stable code, a one-sentence message and, where possible, a source location.
@@ -252,6 +288,7 @@ Every skip has a stable code, a one-sentence message and, where possible, a sour
 | `unsupported-pattern`                    | Valid code this version doesn't handle, or an importer it can't verify (the message says which)             |
 | `self-check-failed`                      | The generated code failed the self-check                                                                    |
 | `parse-error` / `internal-error`         | Bugs: reported per file, never crash the run                                                                |
+| `ignored`                                | The file opts out with an `auto-server-split-ignore` comment                                                |
 
 ## How it decides
 
@@ -268,7 +305,7 @@ Every skip has a stable code, a one-sentence message and, where possible, a sour
 ## Limitations
 
 - **It's conservative.** On three well-known open-source apps, most `"use client"` files are skipped, because they are already genuinely interactive ([docs/benchmarks.md](docs/benchmarks.md)). The tool pays off in codebases that put `"use client"` high in the tree.
-- **Server vs browser rendering differences** that the tool can't see stay a risk: for example, timezone-dependent formatting by a library moves from the browser to the server (`format(new Date(x), "PPP")` in the example above). Calls it _can_ see are kept on the client: nondeterministic ones (`Date.now()`, `Math.random()`, `new Date()`) and locale-dependent ones (`toLocaleString()`, `Intl.*`, `localeCompare()` without an explicit locale).
+- **Server vs browser rendering differences** stay a risk: timezone-dependent formatting moves from the browser to the server (`format(new Date(x), "PPP")` in the example above). The tool warns about the calls it recognises (`[timezone-dependent]`: date-fns formatting and calendar functions, dayjs/moment `.format()` without `.tz()`/`.utc()`, `Date`'s local getters) but doesn't refuse them, and other libraries go unnoticed. Calls it _can_ see are kept on the client: nondeterministic ones (`Date.now()`, `Math.random()`, `new Date()`) and locale-dependent ones (`toLocaleString()`, `Intl.*`, `localeCompare()` without an explicit locale).
 - **Size estimates are project-wide**, not per route: code that any remaining client module imports counts as still shipped, even on routes that don't use that module. A page that only uses the split components can save more than the estimate.
 - **Safety of local modules is decided per module, not per export**, so one client-only helper in a utility module keeps every caller of that module on the client.
 - Third-party React packages are client-only unless they have a `"use client"` entry or are on the small built-in server-safe list. Unknown packages stay in islands.

@@ -557,3 +557,42 @@ changes split it:
 - `output-exists` and `would-create-route` are checked after the analysis, since a removed
   directive creates no file. A file with an existing island file and another problem now reports
   the other problem.
+
+### An opt-out comment, not a config list
+
+`removeUnusedDirectives` made one gap obvious: a file can be `"use client"` on purpose, and the
+only way to say so was an `exclude` glob in the config, away from the code. An
+`auto-server-split-ignore` comment sits next to the directive it explains, carries its reason
+into the report, and survives renames. It's only read in the file header (before the first
+import, or on the directive's line), so a comment deep in a component can't switch a file off by
+accident. It's a skip (`ignored`) rather than a silent omission, so the summary still accounts for
+every `"use client"` file, and size estimates don't assume an ignored file is split.
+
+### Timezone risk is a warning, not a skip
+
+Library date formatting moving to the server was a documented risk the tool didn't see. Making it
+client-only, like `toLocaleString()`, would refuse most splits that move date-fns off the client,
+which are among the largest savings (`PostCard` in the README). Most apps render in a fixed
+timezone or format UTC dates where it doesn't matter, and the user is the one who knows. So
+`timezone-dependent` is a warning: it names the call and its line, and the split goes ahead. It's
+detected from types, not names: a date-fns function by where its declaration lives, a dayjs or
+moment `.format()` by the receiver's type (unless `.tz()`, `.utc()` or `.utcOffset()` is in the
+chain), and `Date`'s local getters on values typed `Date`. Code that stays in an island doesn't
+warn, while code in a server-rendered slot does. date-fns-tz and the `getUTC*()` methods are
+timezone-explicit and never warn.
+
+### CI that fits existing apps
+
+`--check` on a large app fails on every opportunity at once, which makes it hard to turn on. Two
+ways to scope it: `--since <ref>` analyses only the files a branch changed (committed since it
+forked, modified or untracked, from git), and a baseline file lists files to leave alone. Both
+narrow the targets; a baselined file is also left out of the size estimates, since nobody is
+going to split it. Changed-file detection uses `<ref>...HEAD` (the merge base), so a pull request
+isn't charged for what landed on its base branch since it forked; that needs the base ref fetched,
+and the error says so.
+
+The GitHub output is the text output plus workflow-command annotations, not a separate report,
+so the job log reads the same. Annotation paths are made relative to `GITHUB_WORKSPACE`, because
+GitHub resolves them from the repository root while results are relative to the project root. The
+action passes its inputs through environment variables, never into the script text, so an input
+can't inject shell code.
