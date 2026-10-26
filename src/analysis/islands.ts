@@ -764,7 +764,7 @@ export function planComponent(
     if (clientUnits.length === 0 && clientModuleDecls.size === 0) {
       return skip(
         "no-islands",
-        `${component.name} uses no client-only features; removing "use client" may be enough (the tool never removes it automatically)`,
+        `${component.name} uses no client-only features; removing "use client" may be enough (set removeUnusedDirectives to let the tool remove it)`,
       );
     }
     const first = clientUnits[0];
@@ -1120,8 +1120,21 @@ export function planComponent(
     });
     return !clientRead;
   };
+  /**
+   * Renders a component held in a variable (`<LinkIcon />` with `const LinkIcon = link.icon`). A
+   * function can't cross the boundary as a prop, but the rendered element can, as a slot.
+   */
+  const rendersComponentValue = (j: JNode): boolean => {
+    let found = false;
+    forEachValueRef(j.node, (id) => {
+      if (found || !isTagRef(id)) return;
+      const kind = originOf(id).kind;
+      if (kind === "param" || kind === "inner" || kind === "local") found = true;
+    });
+    return found;
+  };
   const isNonTrivial = (j: JNode): boolean => {
-    if (subtreeOf(j).length > 1) return true;
+    if (subtreeOf(j).length > 1 || rendersComponentValue(j)) return true;
     let importedCall = false;
     const visit = (n: ts.Node): void => {
       if (importedCall) return;
@@ -1348,6 +1361,22 @@ export function planComponent(
           ? undefined
           : pickReadFields(checker, prop.name, prop.type, islandRefs(prop), printType);
         if (picked) prop.picked = picked;
+        continue;
+      }
+      // The island may read only serializable fields of an object that also holds functions
+      // (`link.href` and `link.name`, while `link.icon` is rendered in a server slot).
+      const pickedSerializable = ctx.isJs
+        ? undefined
+        : pickReadFields(
+            checker,
+            prop.name,
+            prop.type,
+            islandRefs(prop),
+            printType,
+            (t) => checkSerializable(checker, t).ok,
+          );
+      if (pickedSerializable) {
+        prop.picked = pickedSerializable;
         continue;
       }
       if (!ctx.isJs && ctx.config.mongoose.autoSerialize && isMongooseLike(checker, prop.type)) {

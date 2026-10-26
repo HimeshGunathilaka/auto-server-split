@@ -497,3 +497,133 @@ A second run listed every generated `X.client.tsx` as a skip (`fully-interactive
 - `--interactive` counted declined splits as split (`files split: 2 (1 written)`). The summary now
   counts the applied ones and lists the rest as `files declined`.
 - A helper component moved whole into the island file keeps its own name; the README now says so.
+
+## 1.0.2 — fewer manual steps, fewer skips
+
+### Removing unused directives is opt-in
+
+A `"use client"` file with no client-only code used to be skipped as `no-islands`, with a note
+that the directive may be unnecessary. `removeUnusedDirectives` (and `--remove-unused-directives`)
+now removes it. The analysis is the one a split gets up to the point where it finds no island:
+importers (every one a server module rendering `<X />`), module-level code, env vars, side-effect
+imports. The self-check runs on the result with no island file: no new diagnostics in the file or
+its importers, no client-only code left, serializable props for every Client Component the file
+renders. It stays off by default: a removed directive is a different kind of change from a split,
+and a file can be marked `"use client"` on purpose (for example to keep a heavy component out of
+the server bundle), which the analysis can't tell from an oversight.
+
+`minBytesSaved` and `minStaticRatio` exist to keep small splits from adding a file and an import
+for little gain. A removed directive adds nothing, so neither applies; the saving is still
+estimated (the file's bundle against nothing, with the same shared-code accounting) and reported.
+The result gets its own status, `"directive-removed"`, rather than `"split"` with no islands, so
+JSON consumers and the summary can tell the two apart.
+
+The ESLint rule gets its first fix for this case: it only edits the linted file. Splits stay
+report-only (see [No autofix](#no-autofix)).
+
+### Passes instead of "run it again"
+
+The README used to ask users to rerun the tool until nothing new was split, because a split can
+make another file splittable (a component imported only by a client component that is split). A
+run now does that itself. Only files skipped as `imported-by-client` can change between passes, so
+only they are held back and analysed again; every other result is reported when it's made. The
+next pass applies the last pass's outputs to the same ts-morph project in memory, including the
+new island files, and rebuilds the module graph with a resolution host that sees those files.
+Nothing is written in between, so a dry run shows the final result, and each file is reported
+once. Passes stop when one changes nothing, at 10 at most.
+
+Passes only plan; `minBytesSaved` is applied once, to every pass's changes together. Applying it
+per pass deadlocked chains: a parent and the child it renders that share a dependency each looked
+like they saved nothing while the other still shipped it, so the parent was dropped, the pass
+changed nothing, and the child was never analysed again (the 1.0.1 fix for sibling splits didn't
+reach them). The estimate measures the whole set against the first pass's module graph, which is
+the project on disk: a later pass's change only rewrites its own file and adds an island, which the
+estimate models directly, so nothing from the in-memory project is needed (esbuild's synchronous
+API couldn't serve it anyway). Each later-pass change records the changes it needs: the
+`"use client"` files above it in the original graph, which must all have changed for its importers
+to be server modules. Dropping one drops the changes that need it, and they're reported with the
+skip they had before, saying what they'd need.
+
+`--interactive` makes one pass: the user accepts each change separately, and a later pass would
+assume the earlier changes were accepted. `rerun()` (used by interactive renames) refuses after a
+multi-pass run, because later passes change the project the first pass analysed.
+
+### Component values render on the server
+
+next-learn's `nav-links.tsx` was skipped as `non-serializable-prop`: its links carry an icon
+component (`icon: HomeIcon`) that the list item renders as `<LinkIcon className="w-6" />`. Two
+changes split it:
+
+- A static element that renders a component held in a variable (a parameter, a body variable or a
+  callback variable) is a donut slot even when it's a single element. The function can't cross
+  the boundary as a prop, but the rendered element can.
+- Field picking also applies to objects that aren't serializable as a whole: when the island reads
+  only fields that are (`link.href`, `link.name`), only those cross. Before, picking only made a
+  serializable prop smaller.
+
+### Smaller fixes
+
+- A list item's `key` attribute on a line of its own no longer leaves a blank line in the island.
+- `output-exists` and `would-create-route` are checked after the analysis, since a removed
+  directive creates no file. A file with an existing island file and another problem now reports
+  the other problem.
+
+### An opt-out comment, not a config list
+
+`removeUnusedDirectives` made one gap obvious: a file can be `"use client"` on purpose, and the
+only way to say so was an `exclude` glob in the config, away from the code. An
+`auto-server-split-ignore` comment sits next to the directive it explains, carries its reason
+into the report, and survives renames. It's only read in the file header (before the first
+import, or on the directive's line), so a comment deep in a component can't switch a file off by
+accident. A comment that's in the wrong place is reported as an `ignore-outside-header` warning
+on the change, so someone who meant to opt out finds out. It's a skip (`ignored`) rather than a
+silent omission, so the summary still accounts for every `"use client"` file, and size estimates
+don't assume an ignored file is split.
+
+### Timezone risk is a warning, not a skip
+
+Library date formatting moving to the server was a documented risk the tool didn't see. Making it
+client-only, like `toLocaleString()`, would refuse most splits that move date-fns off the client,
+which are among the largest savings (`PostCard` in the README). Most apps render in a fixed
+timezone or format UTC dates where it doesn't matter, and the user is the one who knows. So
+`timezone-dependent` is a warning: it names the call and its line, and the split goes ahead. It's
+detected from types, not names: a date-fns function by where its declaration lives, a dayjs or
+moment `.format()` by the receiver's type (unless `.tz()`, `.utc()` or `.utcOffset()` is in the
+chain), and `Date`'s local getters on values typed `Date`. Code that stays in an island doesn't
+warn, while code in a server-rendered slot does. date-fns-tz and the `getUTC*()` methods are
+timezone-explicit and never warn. Apps usually format dates in a helper module, so a call to a
+function imported from another project file is followed (three calls deep, through function
+declarations and arrow functions) and warned at the call.
+
+Calls that read the current time are different: `formatDistanceToNow()`, `isToday()`, `dayjs()` and
+`.fromNow()` would be computed once on the server, and on a static page once at build time ("today:
+yes" forever). That's the `Date.now()` problem, which the tool already solves by keeping the call
+in an island, so these are client-only markers too, detected from types like the warnings. A helper
+module that calls one is client-only as a whole, like one that calls `Date.now()`.
+
+The ESLint rule's autofix for unused directives doesn't apply a change with a warning: editors
+run `--fix` on save, which would apply it unseen. It becomes a suggestion, offered as a quick fix.
+
+### CI that fits existing apps
+
+`--check` on a large app fails on every opportunity at once, which makes it hard to turn on. Two
+ways to scope it: `--since <ref>` analyses only the files a branch changed (committed since it
+forked, modified or untracked, from git), and a baseline file lists files to leave alone. Both
+narrow the targets; a baselined file is also left out of the size estimates, since nobody is
+going to split it. Changed-file detection uses `<ref>...HEAD` (the merge base), so a pull request
+isn't charged for what landed on its base branch since it forked; that needs the base ref fetched,
+and the error says so.
+
+The GitHub output is the text output plus workflow-command annotations, not a separate report,
+so the job log reads the same. Annotation paths are made relative to `GITHUB_WORKSPACE`, because
+GitHub resolves them from the repository root while results are relative to the project root. The
+action passes its inputs through environment variables, never into the script text, so an input
+can't inject shell code. It checks the version it's about to run first: before 1.0.2 there's no
+`--format`, and the old CLI read `github` as a path ("github does not exist"), so the action stops
+with an error that says which version it needs.
+
+Changed files come from git with `-z`, so paths arrive as they are: git otherwise quotes and
+escapes non-ASCII names (`"B\303\274cher.tsx"`), which then matched no file and dropped it from the
+check without a word. Every command the reports print (an annotation's "Apply with", the markdown
+report's last line) quotes paths that need it and includes the changes the file needs and
+`--remove-unused-directives` when it removes a directive, so it works when pasted as is.

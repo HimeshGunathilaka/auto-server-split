@@ -8,6 +8,7 @@ export default tseslint.config(
       "dist/**",
       "test/fixtures/**",
       "test/eslint-project/**",
+      "test/eslint-directive-project/**",
       "e2e/apps/**",
       "e2e/.tmp/**",
       "coverage/**",

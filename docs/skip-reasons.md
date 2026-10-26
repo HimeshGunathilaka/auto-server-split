@@ -19,6 +19,11 @@ removed, that module would pull a Server Component into the client bundle, which
 import PostCard from "./PostCard"; // ← PostCard is skipped: imported by components/Sidebar.tsx (client)
 ```
 
+With passes on (the default), a file skipped for this reason is analysed again once its importer
+is split or loses its directive. If the importer can be changed but isn't (for example it's below
+`minBytesSaved`), the message says so: `imported by components/Shelf.tsx (client); it can be split
+along with components/Shelf.tsx (skipped: below-threshold), which isn't changed`.
+
 Only a client module gives this code. Importers outside the TypeScript project (a test file the
 tsconfig excludes, a `.js` file without `allowJs`) are checked without type information and may
 render the component as `<PostCard />` like any other server module; an importer whose usage can't
@@ -105,6 +110,12 @@ A function-typed prop is allowed when every importer passes a Server Action for 
 documents and values containing `ObjectId`s can cross the boundary with `mongoose.autoSerialize: true`,
 as long as the island only reads individual fields (not the whole object).
 
+Two cases are handled without a skip. An object that also holds functions can cross when the
+island reads only its serializable fields (`link.href`, `link.name`): only those fields are
+passed. And a component held in a variable (`const LinkIcon = link.icon`) that an island renders
+as `<LinkIcon className="w-6" />`, with nothing client-only in that element, is rendered on the
+server and passed into the island as `children` (or `slotN`) instead of as a function.
+
 **To fix:** pass data instead of behaviour (an id or URL), make the function a Server Action
 (`"use server"`), or keep the component fully client-side.
 
@@ -173,8 +184,11 @@ Component on purpose and pass what the client needs as a prop.
 ## `no-islands`
 
 The file has no client-only code at all. The `"use client"` directive may simply be unnecessary.
-The tool never removes it automatically; check that nothing imports the file expecting a client
-component, then remove it yourself.
+
+**To fix:** set [`removeUnusedDirectives`](configuration.md#removeunuseddirectives) (or pass
+`--remove-unused-directives`) and the tool removes the directive, after the same importer checks
+and self-check as a split. Removing it can make the components the file imports splittable; a run
+picks those up in its next pass.
 
 ## `fully-interactive`
 
@@ -246,3 +260,18 @@ module). Nothing is written. Please report it with the message.
 
 The file couldn't be parsed, or the tool hit a bug. The run continues with the other files; run with
 `--verbose` for a stack trace and please report it.
+
+## `ignored`
+
+The file has an `auto-server-split-ignore` comment in its header (before the first import, or on
+the directive's line), so it's left as it is, and size estimates don't assume it's split. The
+message repeats the reason written after the comment, if any:
+
+```tsx
+"use client"; // auto-server-split-ignore: keeps the chart library out of the server bundle
+```
+
+A comment anywhere else in the file (above the component, after the imports) doesn't apply; the
+file is analysed as usual, and a change to it carries an `ignore-outside-header` warning.
+
+**To fix:** nothing to do; remove the comment to have the file analysed again.

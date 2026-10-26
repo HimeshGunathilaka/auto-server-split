@@ -3,6 +3,7 @@ import type { SplitOptions, SplitResult, UserConfig } from "./types.js";
 
 export type * from "./types.js";
 export { SKIP_CODES, SKIP_TITLES } from "./analysis/skip.js";
+export { WARNING_CODES } from "./analysis/warnings.js";
 
 /** Identity helper that gives `auto-split.config.ts` type checking. */
 export function defineConfig(config: UserConfig): UserConfig {

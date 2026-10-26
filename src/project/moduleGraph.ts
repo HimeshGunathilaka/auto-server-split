@@ -16,6 +16,8 @@ const SOURCE_EXT_RE = /\.(tsx?|jsx?|mts|cts|mjs|cjs)$/;
  */
 export class ModuleGraph {
   readonly nodes = new Map<string, ModuleNode>();
+  /** Island files an earlier pass of the run generated in memory; they don't exist on disk yet. */
+  readonly generated = new Set<string>();
   private readonly importers = new Map<string, ModuleEdge[]>();
   /** Client-graph membership: file -> the module it was first reached from (null for "use client" roots). */
   private readonly clientParent = new Map<string, string | null>();
@@ -27,10 +29,10 @@ export class ModuleGraph {
 
   /**
    * The client graph as it would be with `split` applied: the split files stop being client roots
-   * and their island files become roots. Returns every project module it reaches and the packages
-   * those modules import.
+   * and their island files (if any) become roots. Returns every project module it reaches and the
+   * packages those modules import.
    */
-  clientGraphAfter(split: readonly { file: string; islandFile: string; islandText: string }[]): {
+  clientGraphAfter(split: readonly { file: string; island?: { file: string; text: string } }[]): {
     files: Set<string>;
     packages: Set<string>;
   } {
@@ -43,7 +45,8 @@ export class ModuleGraph {
       files.add(node.file);
       pending.push(node.edges);
     }
-    for (const s of split) pending.push(this.edgesOfText(s.islandFile, s.islandText));
+    for (const s of split)
+      if (s.island) pending.push(this.edgesOfText(s.island.file, s.island.text));
     for (let edges = pending.pop(); edges; edges = pending.pop()) {
       for (const edge of edges) {
         if (edge.kind === "type") continue;
@@ -107,6 +110,25 @@ export class ModuleGraph {
 
   isClient(file: string): boolean {
     return this.clientParent.has(file);
+  }
+
+  /**
+   * The "use client" modules that make `file`'s importers client modules: each importer that has
+   * the directive, and the first one on every import path that reaches the others.
+   */
+  clientRootsAbove(file: string): Set<string> {
+    const roots = new Set<string>();
+    const seen = new Set<string>();
+    const pending = [file];
+    for (let target = pending.pop(); target; target = pending.pop()) {
+      for (const edge of this.importersOf(target)) {
+        if (edge.kind === "type" || seen.has(edge.from) || !this.isClient(edge.from)) continue;
+        seen.add(edge.from);
+        if (this.nodes.get(edge.from)?.directive === "use client") roots.add(edge.from);
+        else pending.push(edge.from);
+      }
+    }
+    return roots;
   }
 
   /** The "use client" module that pulls `file` into the client graph, if it's not a root itself. */
@@ -200,7 +222,16 @@ export function buildModuleGraph(
   const graph = new ModuleGraph(loaded.root);
   // Resolve with allowJs so edges into JS files are never lost, whatever the user's tsconfig says.
   const options: ts.CompilerOptions = { ...loaded.compilerOptions, allowJs: true };
-  const host: ts.ModuleResolutionHost = ts.sys;
+  const overlay = loaded.overlay;
+  for (const file of overlay?.keys() ?? []) if (!ts.sys.fileExists(file)) graph.generated.add(file);
+  const host: ts.ModuleResolutionHost = overlay
+    ? {
+        ...ts.sys,
+        fileExists: (f) => overlay.has(path.resolve(f)) || ts.sys.fileExists(f),
+        readFile: (f) => overlay.get(path.resolve(f)) ?? ts.sys.readFile(f),
+        realpath: (f) => (overlay.has(path.resolve(f)) ? f : (ts.sys.realpath?.(f) ?? f)),
+      }
+    : ts.sys;
   const cache = ts.createModuleResolutionCache(loaded.root, (f) => f, options);
 
   const resolve = (specifier: string, from: string): string | undefined => {

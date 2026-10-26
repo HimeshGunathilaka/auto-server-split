@@ -1,6 +1,8 @@
 import type { Skip } from "./analysis/skip.js";
+import type { Warning } from "./analysis/warnings.js";
 
 export type { Skip, SkipCode, SourceLocation } from "./analysis/skip.js";
+export type { Warning, WarningCode } from "./analysis/warnings.js";
 
 export type IslandInfo = {
   name: string;
@@ -13,7 +15,11 @@ export type IslandInfo = {
 
 export type FileResult = {
   file: string;
-  status: "split" | "skipped" | "unchanged";
+  /**
+   * `"directive-removed"`: the file has no client-only code, and only its `"use client"` directive
+   * is removed (with `removeUnusedDirectives`). Its `islands` is empty and `outputs` holds the file.
+   */
+  status: "split" | "directive-removed" | "skipped" | "unchanged";
   skipped?: Skip;
   islands: IslandInfo[];
   /** Share of JSX nodes that end up outside islands, 0..1. */
@@ -30,6 +36,16 @@ export type FileResult = {
    * splits with `minBytesSaved: 0` get here; otherwise the file is skipped as `measure-failed`.
    */
   measureError?: string;
+  /**
+   * Risks the change carries that don't make the tool skip it, for example date formatting that
+   * now renders in the server's timezone. Only on changes.
+   */
+  warnings?: Warning[];
+  /**
+   * Changes to other files this one needs, project-relative: a later pass found it once they made
+   * its importers Server Components (see `iterate`). Apply them in the same run.
+   */
+  requires?: string[];
   /** Unified diff covering all touched/created files. */
   diff: string;
   /** Project-relative path -> new content, for every touched or created file. */
@@ -52,6 +68,7 @@ export type UserConfig = {
   minStaticRatio?: number;
   prettier?: "auto" | false;
   mongoose?: { autoSerialize?: boolean };
+  removeUnusedDirectives?: boolean;
 };
 
 export type ResolvedConfig = {
@@ -66,6 +83,7 @@ export type ResolvedConfig = {
   minStaticRatio: number;
   prettier: "auto" | false;
   mongoose: { autoSerialize: boolean };
+  removeUnusedDirectives: boolean;
 };
 
 export type SplitOptions = {
@@ -73,6 +91,16 @@ export type SplitOptions = {
   root?: string;
   /** Files or directories to consider, relative to root. Defaults to the config `include`. */
   paths?: string[];
+  /**
+   * Narrows the targets (from `paths` or `include`) to these files, relative to root. The CLI's
+   * `--since` passes the files changed since a git ref.
+   */
+  only?: string[];
+  /**
+   * Files to leave as they are, relative to root: they're not analysed, and size estimates don't
+   * assume they're split. The CLI's `--baseline` reads them from a file.
+   */
+  baseline?: string[];
   /** Write the outputs to disk. Default false. */
   write?: boolean;
   /** Overrides for the config file. */
@@ -83,6 +111,12 @@ export type SplitOptions = {
   noConfigFile?: boolean;
   /** Skip the esbuild size measurement (faster; bytesSaved is omitted and minBytesSaved is not applied). */
   measure?: boolean;
+  /**
+   * Repeat the analysis until no new change is found (default true). A split can make another file
+   * splittable: a component imported only by a client component that is split becomes splittable
+   * once its importer is a Server Component. Later passes see the earlier passes' outputs in memory.
+   */
+  iterate?: boolean;
   /** Called with each file result as soon as it is ready. */
   onFile?: (result: FileResult) => void;
 };

@@ -2,6 +2,75 @@
 
 All notable changes to this project are documented here. The project follows [Semantic Versioning](https://semver.org/).
 
+## 1.0.2 — chained splits, unused directives, timezone warnings, CI reports
+
+- Chained splits in one run. A component that only a client component imports is skipped as
+  `imported-by-client`, but becomes splittable once that importer is split. The run now analyses
+  such files again, against the earlier changes in memory, until nothing new changes (at most 10
+  passes), so a single dry run shows the whole result instead of asking you to rerun. Each file is
+  reported once. Size estimates and `minBytesSaved` apply to every pass's changes together, so a
+  parent and the child it renders that share a dependency pass the threshold together instead of
+  each looking like it saves nothing. A change found in a later pass lists the changes it needs in
+  `requires` (the CLI prints "needs …"); if one of them is dropped, so is the change, and its
+  `imported-by-client` message names what it needs. `--interactive` still makes one pass. API:
+  `split({ iterate: false })` makes one pass.
+- New option `removeUnusedDirectives` (CLI: `--remove-unused-directives`), off by default. A
+  `"use client"` file with no client-only code (`no-islands`) loses its directive, after the same
+  importer checks and self-check as a split. The result has the new status `"directive-removed"`;
+  `minBytesSaved` and `minStaticRatio` don't apply, since no file is created, but the saving is
+  estimated and reported. The summary lists `directives removed`, and `--check` counts them. With
+  the option in the config file, the ESLint rule reports these files too, and fixes them by
+  removing the directive (its first autofix). A removal with a warning is an editor suggestion
+  instead, so `eslint --fix` and fix-on-save don't apply it unseen; the rule's messages name the
+  first warning. Removing a directive can make the files it imports
+  splittable, which the next pass picks up.
+- Components held in variables no longer block a split. An island element like
+  `<LinkIcon className="w-6" />` (with `const LinkIcon = link.icon`) is rendered on the server and
+  passed in as `children`, and an object that holds functions crosses the boundary when the island
+  reads only its serializable fields (`link={{ name: link.name, href: link.href }}`). This splits
+  next-learn's `nav-links.tsx`, which was skipped as `non-serializable-prop`.
+- A list item's `key` on a line of its own no longer leaves a blank line in the island.
+- `output-exists` and `would-create-route` are checked after the analysis, so a file with another
+  problem reports that problem.
+- `auto-server-split-ignore` comments: a file whose header has one (before the first import, or
+  on the directive's line) is left as it is by the CLI, the API, the size estimates and the ESLint
+  rule, and reported as the new skip `ignored` with the reason written after the comment. A comment
+  elsewhere in the file doesn't apply, and a change to that file carries an `ignore-outside-header`
+  warning that says so.
+- Timezone warnings. A change can now carry `warnings` (new `WARNING_CODES` export): date-fns
+  formatting and calendar functions (including `formatISO`), dayjs/moment `.format()` without
+  `.tz()`/`.utc()`, and `Date`'s local getters (also on optional values) that move from the browser
+  to the server are reported as `timezone-dependent`, with their location, in the CLI output, the
+  JSON and the reports below. Calls to functions imported from other project files are followed,
+  so a `formatDate()` helper that calls date-fns is reported at its call. The change itself isn't
+  refused.
+- Date-library calls that read the current time stay in islands, like `Date.now()`: date-fns
+  `formatDistanceToNow()`, `isToday()`, `isPast()` and the other `isThis…()` checks, `dayjs()` and
+  `moment()` without a date, and `.fromNow()`/`.toNow()`/`.calendar()`. 1.0.1 and earlier moved them to the
+  server, where a static page computed them once, at build time.
+- `--since <ref>` checks only the files changed since a git ref (plus uncommitted and untracked
+  ones, with non-ASCII names too); API: `only`. `--write-baseline <file>` records the files that
+  have a change available,
+  and `--baseline <file>` leaves them as they are (not analysed, not assumed split by estimates);
+  API: `baseline`. Together they let `--check` run on an existing app and fail only on new
+  opportunities.
+- `--format markdown` prints one report (changes, warnings, skips by reason) for a pull request
+  comment. `--format github` adds annotations to the text output (a notice per available change,
+  a warning per timezone warning, mapped to repository paths through `GITHUB_WORKSPACE`) and appends
+  the markdown report to `$GITHUB_STEP_SUMMARY`. Their "apply" commands work when pasted: paths are
+  quoted where needed, and they include the changes a file needs and `--remove-unused-directives`
+  when it removes a directive. `--json` is `--format json`; combining it with another `--format` is
+  an error.
+- A GitHub Action (`action.yml`) runs `--check --format github` with the project's installed copy
+  (or a given `version`), with inputs for `since`, `baseline`, `working-directory`, extra `args` and
+  `fail-on-changes`. It needs 1.0.2 or later, and stops with an error naming the version it found
+  otherwise.
+- docs/benchmarks.md regenerated: next-learn's `nav-links.tsx` now splits with the thresholds off
+  (it was `non-serializable-prop`), and skip messages say what made each element client-only. The
+  benchmark script replaces its work directory with `<work dir>` in build errors.
+- docs/prior-art.md: the Next.js 16.4 `next-bundle-optimizer` agent skill and bundle analyzer
+  export, an unused-directive lint rule, and editor boundary visualizers.
+
 ## 1.0.1 — fixes from an integration run
 
 - Size estimates are made for the whole set of splits. A file's estimate assumes the other splits

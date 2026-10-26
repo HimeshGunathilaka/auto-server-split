@@ -9,19 +9,19 @@ const fixture = path.join(repo, "test/fixtures/01-postcard-like-button/input");
 const tmpRoot = path.join(repo, "test/.tmp");
 let dir = "";
 
-function run(args: string[], cwd = dir) {
+function run(args: string[], cwd = dir, env: Record<string, string> = {}) {
   const r = spawnSync(process.execPath, [cli, ...args], {
     cwd,
     encoding: "utf8",
-    env: { ...process.env, NO_COLOR: "1" },
+    env: { ...process.env, NO_COLOR: "1", GITHUB_STEP_SUMMARY: "", ...env },
   });
   return { code: r.status, stdout: r.stdout, stderr: r.stderr };
 }
 
-function freshCopy(git: boolean) {
+function freshCopy(git: boolean, from = fixture) {
   dir = path.join(tmpRoot, `cli-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   mkdirSync(dir, { recursive: true });
-  cpSync(fixture, dir, { recursive: true });
+  cpSync(from, dir, { recursive: true });
   if (git) {
     const g = (...args: string[]) => execFileSync("git", args, { cwd: dir, stdio: "ignore" });
     g("init", "-q");
@@ -51,6 +51,20 @@ describe("CLI", () => {
     freshCopy(false);
     expect(run(["PostCard.tsx", "--check"]).code).toBe(2);
     expect(run(["app/page.tsx", "--check"]).code).toBe(0);
+  });
+
+  it("--remove-unused-directives removes a directive, and the next pass splits what it imports", () => {
+    freshCopy(false, path.join(repo, "test/fixtures/35-remove-unused-directive/input"));
+    const r = run([".", "--remove-unused-directives", "--no-measure"]);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain(
+      '✔ removed "use client" components/Sidebar.tsx · no client-only code',
+    );
+    expect(r.stdout).toContain("✔ split components/PostCard.tsx");
+    expect(r.stdout).toContain("files split:    1 (dry run, nothing written)");
+    expect(r.stdout).toContain("directives removed: 1 (dry run, nothing written)");
+    expect(run([".", "--check", "--no-measure"]).code).toBe(0);
+    expect(run([".", "--check", "--no-measure", "--remove-unused-directives"]).code).toBe(2);
   });
 
   it("--json prints the API result shape", () => {
@@ -117,7 +131,7 @@ describe("CLI", () => {
       expect(r.code).toBe(1);
       // Rejected for the combination, before it even asks for a terminal.
       expect(r.stderr).toContain(
-        "--interactive can't be combined with --dry-run, --json or --check",
+        "--interactive can't be combined with --dry-run, --check, --json or --format markdown",
       );
     }
     expect(existsSync(path.join(dir, "PostCard.client.tsx"))).toBe(false);
@@ -166,6 +180,89 @@ describe("CLI", () => {
     expect(again.stdout).not.toContain("PostCard.client.tsx");
     expect(again.stdout).toContain('files scanned:  2 (0 with "use client")');
     expect(again.stdout).toContain("files skipped:  0");
+  });
+
+  it("--since checks only the files changed since a git ref", () => {
+    freshCopy(true);
+    const clean = run([".", "--since", "HEAD", "--check", "--no-measure"]);
+    expect(clean.code).toBe(0);
+    expect(clean.stdout).toContain('files scanned:  0 (0 with "use client")');
+    writeFileSync(
+      path.join(dir, "PostCard.tsx"),
+      `${readFileSync(path.join(dir, "PostCard.tsx"), "utf8")}// edit\n`,
+    );
+    const changed = run([".", "--since", "HEAD", "--check", "--no-measure"]);
+    expect(changed.code).toBe(2);
+    expect(changed.stdout).toContain('files scanned:  1 (1 with "use client")');
+    expect(run([".", "--since", "no-such-ref"]).stderr).toContain("can't list the files changed");
+    expect(run([".", "--since", "--output=x"]).code).toBe(1);
+  });
+
+  it("--since keeps files whose names git would quote", () => {
+    freshCopy(true);
+    const card = readFileSync(path.join(dir, "PostCard.tsx"), "utf8");
+    writeFileSync(path.join(dir, "Kärtchen.tsx"), card);
+    const untracked = run([".", "--since", "HEAD", "--check", "--no-measure"]);
+    expect(untracked.stdout).toContain('files scanned:  1 (1 with "use client")');
+    const g = (...args: string[]) => execFileSync("git", args, { cwd: dir, stdio: "ignore" });
+    g("add", "-A");
+    g("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "umlaut");
+    const committed = run([".", "--since", "HEAD~1", "--check", "--no-measure"]);
+    expect(committed.code).toBe(2);
+    expect(committed.stdout).toContain("Kärtchen.tsx");
+  });
+
+  it("prints the changes a chained change needs", () => {
+    freshCopy(false, path.join(repo, "test/fixtures/36-iterate-cascade/input"));
+    const r = run([".", "--no-measure"]);
+    expect(r.stdout).toContain("needs components/Shelf.tsx changed too");
+  });
+
+  it("--write-baseline records the available changes, and --baseline leaves them alone", () => {
+    freshCopy(false);
+    const written = run([".", "--no-measure", "--write-baseline", "base.json"]);
+    expect(written.stdout).toContain("Wrote 1 file to base.json");
+    expect(JSON.parse(readFileSync(path.join(dir, "base.json"), "utf8"))).toEqual({
+      files: ["PostCard.tsx"],
+    });
+    expect(run([".", "--check", "--no-measure", "--baseline", "base.json"]).code).toBe(0);
+    expect(run([".", "--check", "--no-measure"]).code).toBe(2);
+    writeFileSync(path.join(dir, "bad.json"), '{ "files": "PostCard.tsx" }');
+    const bad = run([".", "--baseline", "bad.json"]);
+    expect(bad.code).toBe(1);
+    expect(bad.stderr).toContain('expected { "files": ["path", ...] }');
+  });
+
+  it("--format markdown prints one report for a pull request comment", () => {
+    freshCopy(false);
+    const r = run([".", "--format", "markdown", "--no-measure"]);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toMatch(/^## auto-server-split\n/);
+    expect(r.stdout).toContain("| `PostCard.tsx` | split | `PostCardButton` | – |");
+    expect(r.stdout).toContain("`PostCard.tsx:13`: format() from date-fns");
+    expect(r.stdout).not.toContain("files scanned:");
+  });
+
+  it("--format github adds annotations and appends the report to the job summary", () => {
+    freshCopy(false);
+    const summary = path.join(dir, "summary.md");
+    const r = run([".", "--format", "github", "--no-measure"], dir, {
+      GITHUB_STEP_SUMMARY: summary,
+      GITHUB_WORKSPACE: path.dirname(dir),
+    });
+    const prefix = path.basename(dir);
+    expect(r.stdout).toContain(
+      `::notice file=${prefix}/PostCard.tsx,line=15,title=Split available::80%25 static`,
+    );
+    expect(r.stdout).toContain(
+      `::warning file=${prefix}/PostCard.tsx,line=13,title=timezone-dependent::format() from date-fns`,
+    );
+    expect(r.stdout).toContain("files scanned:");
+    expect(readFileSync(summary, "utf8")).toContain("## auto-server-split");
+    expect(run([".", "--format", "yaml"]).stderr).toContain("--format must be text, json");
+    const both = run([".", "--json", "--format", "markdown"]);
+    expect(both.code).toBe(1);
+    expect(both.stderr).toContain("--json is --format json");
   });
 
   it("exits 1 for a path that does not exist", () => {

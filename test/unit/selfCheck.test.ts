@@ -33,10 +33,8 @@ function run(serverText: string, islandText: string) {
     moduleSafety,
     serverSafeHooks: new Set(),
     file,
-    islandFile,
-    islandSpecifier: "./PostCard.client",
     serverText,
-    islandText,
+    island: { file: islandFile, specifier: "./PostCard.client", text: islandText },
     importers: [path.join(fixture, "input/app/page.tsx")],
     isJs: false,
   });

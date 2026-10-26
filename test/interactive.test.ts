@@ -1,5 +1,6 @@
 import path from "node:path";
 import { PassThrough } from "node:stream";
+import { stripVTControlCharacters } from "node:util";
 import { describe, expect, it } from "vitest";
 import { reviewInteractively } from "../src/interactive.js";
 import { runSplit } from "../src/split.js";
@@ -16,7 +17,8 @@ async function review(answers: string[]) {
   const input = new PassThrough();
   const output = new PassThrough();
   let printed = "";
-  output.on("data", (d) => (printed += String(d)));
+  // picocolors colours the prompts when CI is set.
+  output.on("data", (d) => (printed += stripVTControlCharacters(String(d))));
   input.end(answers.map((a) => `${a}\n`).join(""));
   const accepted = await reviewInteractively(report.files, report.rerun, {
     input,
@@ -64,5 +66,32 @@ describe("interactive review", () => {
   it("rejects names that collide with the file's own names", async () => {
     const { printed } = await review(["r", "Toolbar", "", "n"]);
     expect(printed).toContain("already used");
+  });
+
+  it("asks about a removed directive without offering a rename", async () => {
+    const root = path.resolve(import.meta.dirname, "fixtures/35-remove-unused-directive/input");
+    const report = await runSplit({
+      root,
+      measure: false,
+      noConfigFile: true,
+      iterate: false,
+      config: { minBytesSaved: 0, removeUnusedDirectives: true },
+    });
+    const input = new PassThrough();
+    const output = new PassThrough();
+    let printed = "";
+    output.on("data", (d) => (printed += stripVTControlCharacters(String(d))));
+    input.end("r\ny\n");
+    const accepted = await reviewInteractively(report.files, report.rerun, {
+      input,
+      output,
+      colorDiff: (d) => d,
+      describe: (f) => `FILE ${f.file}`,
+    });
+    expect(printed).toContain("Remove the directive? [y]es / [n]o / [d]iff / [q]uit");
+    expect(printed).toContain("Please answer y, n, d or q.");
+    expect(accepted.map((f) => `${f.file}:${f.status}`)).toEqual([
+      "components/Sidebar.tsx:directive-removed",
+    ]);
   });
 });

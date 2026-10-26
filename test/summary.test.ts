@@ -24,7 +24,7 @@ describe("CLI summary", () => {
       declined: 1,
     }).join("\n");
     expect(text).toContain("files split:    1 (1 written)");
-    expect(text).toContain("files declined: 1 (proposed splits not accepted)");
+    expect(text).toContain("files declined: 1 (proposed changes not accepted)");
     expect(text).toContain("estimated saving: 100 B gzip");
   });
 
@@ -39,5 +39,20 @@ describe("CLI summary", () => {
     }).join("\n");
     expect(text).toContain("files split:    1 (dry run, nothing written)");
     expect(text).not.toContain("declined");
+  });
+
+  it("counts removed directives apart from splits", () => {
+    const a = result("A.tsx", 100);
+    const b: FileResult = { ...result("B.tsx", 50), status: "directive-removed" };
+    const text = summaryLines({
+      files: [a, b],
+      filesScanned: 2,
+      mode: "write",
+      splits: [a, b],
+      declined: 0,
+    }).join("\n");
+    expect(text).toContain("files split:    1 (1 written)");
+    expect(text).toContain("directives removed: 1 (1 written)");
+    expect(text).toContain("estimated saving: 150 B gzip");
   });
 });

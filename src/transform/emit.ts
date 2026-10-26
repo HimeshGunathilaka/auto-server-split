@@ -676,7 +676,13 @@ function renderIsland(
   if (island.keyAttr) {
     let start = island.keyAttr.getStart(sf);
     while (start > 0 && /[ \t]/.test(text[start - 1] ?? "")) start--;
-    ms.remove(start, island.keyAttr.getEnd());
+    let end = island.keyAttr.getEnd();
+    // A `key` on a line of its own takes the line with it.
+    let lineEnd = end;
+    while (/[ \t]/.test(text[lineEnd] ?? "")) lineEnd++;
+    const eol = text.startsWith("\r\n", lineEnd) ? 2 : text[lineEnd] === "\n" ? 1 : 0;
+    if (text[start - 1] === "\n" && eol > 0) end = lineEnd + eol;
+    ms.remove(start, end);
   }
   let rootText = ms.slice(rootStart, root.getEnd());
   const multiline = rootText.includes("\n");
@@ -689,6 +695,15 @@ function renderIsland(
   }
   lines.push("}");
   return lines.join("\n");
+}
+
+/** The file's text without its directive (`"use client"`) and the whitespace that follows it. */
+export function withoutDirective(sf: ts.SourceFile): string {
+  const directive = getModuleDirective(sf).statement;
+  if (!directive) return sf.text;
+  let end = directive.getEnd();
+  while (end < sf.text.length && /\s/.test(sf.text[end] ?? "")) end++;
+  return sf.text.slice(0, directive.getStart(sf)) + sf.text.slice(end);
 }
 
 function renderUnit(unit: Unit, sf: ts.SourceFile, ind: string): string {

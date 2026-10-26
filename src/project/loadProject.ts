@@ -28,6 +28,11 @@ export type LoadedProject = {
    * analysis touches; this lists every file the tsconfig covers, for the module graph.
    */
   lazyFileNames?: string[];
+  /**
+   * Files whose text in the project differs from the disk (absolute path -> text): the outputs of
+   * a run's earlier passes, including generated island files that don't exist on disk yet.
+   */
+  overlay?: ReadonlyMap<string, string>;
 };
 
 type LoadOptions = {

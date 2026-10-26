@@ -42,7 +42,7 @@ const cases = {
       errors: [
         {
           message:
-            "PostCard is 80% static with 1 interactive island (<button>). Run: npx auto-server-split test/eslint-project/components/PostCard.tsx --write",
+            "PostCard is 80% static with 1 interactive island (<button>). Check first (line 13): format() from date-fns uses the timezone of the machine that renders it, which is now the server; format with an explicit timezone (date-fns-tz's formatInTimeZone) or keep it in an island. Run: npx auto-server-split test/eslint-project/components/PostCard.tsx --write",
           line: 1,
         },
       ],
@@ -81,6 +81,62 @@ describe("prefer-server-split without typed linting", () => {
     languageOptions: { parser: tseslint.parser, parserOptions: { ecmaFeatures: { jsx: true } } },
   });
   tester.run("prefer-server-split", rule, cases);
+});
+
+const directiveDir = path.resolve(import.meta.dirname, "eslint-directive-project");
+const panel = path.join(directiveDir, "components/Panel.tsx");
+const stamp = path.join(directiveDir, "components/Stamp.tsx");
+const directiveCases = {
+  valid: [],
+  invalid: [
+    {
+      code: readFileSync(panel, "utf8"),
+      filename: panel,
+      errors: [
+        {
+          message:
+            'Panel uses no client-only code, and every importer is a Server Component, so "use client" is unnecessary.',
+          line: 1,
+        },
+      ],
+      output: readFileSync(panel, "utf8").replace('"use client";\n\n', ""),
+    },
+    {
+      // The change has a timezone warning: removing the directive is a suggestion, not a fix.
+      code: readFileSync(stamp, "utf8"),
+      filename: stamp,
+      errors: [
+        {
+          message:
+            'Stamp uses no client-only code, and every importer is a Server Component, so "use client" is unnecessary. Check first (line 4): Date.prototype.getHours() reads the timezone of the machine that renders it, which is now the server; use the getUTC*() methods or format with an explicit timeZone.',
+          line: 1,
+          suggestions: [
+            {
+              messageId: "removeDirective",
+              output: readFileSync(stamp, "utf8").replace('"use client";\n\n', ""),
+            },
+          ],
+        },
+      ],
+      output: null,
+    },
+  ],
+};
+
+describe("unused directives (removeUnusedDirectives in the config)", () => {
+  new RuleTester({
+    languageOptions: {
+      parser: tseslint.parser,
+      parserOptions: {
+        project: "./tsconfig.json",
+        tsconfigRootDir: directiveDir,
+        ecmaFeatures: { jsx: true },
+      },
+    },
+  }).run("prefer-server-split (typed)", rule, directiveCases);
+  new RuleTester({
+    languageOptions: { parser: tseslint.parser, parserOptions: { ecmaFeatures: { jsx: true } } },
+  }).run("prefer-server-split (untyped)", rule, directiveCases);
 });
 
 describe("recommended config", () => {

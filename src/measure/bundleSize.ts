@@ -9,12 +9,14 @@ import type { ModuleGraph } from "../project/moduleGraph.js";
 
 type BytesSaved = { isolated: number; conservative: number };
 
-/** A file a run would split, as the estimate sees it: its text before and its island's text after. */
+/**
+ * A file a run would change, as the estimate sees it: its text before and its island's text after.
+ * Without an island, the file's `"use client"` directive is removed and nothing replaces it.
+ */
 export type SplitCandidate = {
   file: string;
   originalText: string;
-  islandFile: string;
-  islandText: string;
+  island?: { file: string; text: string };
 };
 
 /**
@@ -30,6 +32,13 @@ type BundleStats = {
   inputs: Map<string, number>;
   /** Package files -> the packages imported by project code that pull them in. */
   pulledInBy: Map<string, Set<string>>;
+};
+
+const EMPTY_BUNDLE: BundleStats = {
+  gzip: 0,
+  minified: 0,
+  inputs: new Map(),
+  pulledInBy: new Map(),
 };
 
 /** Bundles kept per run; an editor's ESLint process measures every edit, so this is bounded. */
@@ -165,7 +174,9 @@ export class BundleMeasurer {
         bundles.set(c.file, before);
         continue;
       }
-      const after = this.bundle({ file: c.islandFile, contents: c.islandText });
+      const after = c.island
+        ? this.bundle({ file: c.island.file, contents: c.island.text })
+        : EMPTY_BUNDLE;
       bundles.set(c.file, "error" in after ? after : { before, after });
     }
 
