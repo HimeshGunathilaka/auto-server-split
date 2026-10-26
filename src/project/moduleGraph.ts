@@ -16,6 +16,8 @@ const SOURCE_EXT_RE = /\.(tsx?|jsx?|mts|cts|mjs|cjs)$/;
  */
 export class ModuleGraph {
   readonly nodes = new Map<string, ModuleNode>();
+  /** Island files an earlier pass of the run generated in memory; they don't exist on disk yet. */
+  readonly generated = new Set<string>();
   private readonly importers = new Map<string, ModuleEdge[]>();
   /** Client-graph membership: file -> the module it was first reached from (null for "use client" roots). */
   private readonly clientParent = new Map<string, string | null>();
@@ -110,6 +112,25 @@ export class ModuleGraph {
     return this.clientParent.has(file);
   }
 
+  /**
+   * The "use client" modules that make `file`'s importers client modules: each importer that has
+   * the directive, and the first one on every import path that reaches the others.
+   */
+  clientRootsAbove(file: string): Set<string> {
+    const roots = new Set<string>();
+    const seen = new Set<string>();
+    const pending = [file];
+    for (let target = pending.pop(); target; target = pending.pop()) {
+      for (const edge of this.importersOf(target)) {
+        if (edge.kind === "type" || seen.has(edge.from) || !this.isClient(edge.from)) continue;
+        seen.add(edge.from);
+        if (this.nodes.get(edge.from)?.directive === "use client") roots.add(edge.from);
+        else pending.push(edge.from);
+      }
+    }
+    return roots;
+  }
+
   /** The "use client" module that pulls `file` into the client graph, if it's not a root itself. */
   clientRootOf(file: string): string | undefined {
     let current: string | null | undefined = file;
@@ -202,6 +223,7 @@ export function buildModuleGraph(
   // Resolve with allowJs so edges into JS files are never lost, whatever the user's tsconfig says.
   const options: ts.CompilerOptions = { ...loaded.compilerOptions, allowJs: true };
   const overlay = loaded.overlay;
+  for (const file of overlay?.keys() ?? []) if (!ts.sys.fileExists(file)) graph.generated.add(file);
   const host: ts.ModuleResolutionHost = overlay
     ? {
         ...ts.sys,

@@ -764,7 +764,7 @@ export function planComponent(
     if (clientUnits.length === 0 && clientModuleDecls.size === 0) {
       return skip(
         "no-islands",
-        `${component.name} uses no client-only features; removing "use client" may be enough (the tool never removes it automatically)`,
+        `${component.name} uses no client-only features; removing "use client" may be enough (set removeUnusedDirectives to let the tool remove it)`,
       );
     }
     const first = clientUnits[0];

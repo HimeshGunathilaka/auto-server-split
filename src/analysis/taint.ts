@@ -1,4 +1,5 @@
 import { ts } from "ts-morph";
+import { clockReadingCall } from "./dateLibraries.js";
 import type { FrameworkAdapter } from "./framework.js";
 import type { ImportBinding, ImportTable, ProjectModuleSafety, UsageClass } from "./importTable.js";
 import { classifyImportUsage } from "./importTable.js";
@@ -173,7 +174,8 @@ export class FileFacts {
       if (ts.isCallExpression(n) && this.isHookCall(n)) {
         markers.push({ kind: "hook", node: n, detail: `${calleeName(n) ?? "hook"}()` });
       }
-      const nondeterministic = nondeterministicCall(n) ?? this.localeDependentCall(n);
+      const nondeterministic =
+        nondeterministicCall(n) ?? clockReadingCall(this.checker, n) ?? this.localeDependentCall(n);
       if (nondeterministic)
         markers.push({ kind: "nondeterministic", node: n, detail: nondeterministic });
       ts.forEachChild(n, visit);

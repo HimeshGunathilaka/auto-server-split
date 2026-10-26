@@ -25,7 +25,7 @@ import type {
 | `noConfigFile` | `boolean`                      | `false`          | Ignore config files on disk.                                                                                                                                |
 | `measure`      | `boolean`                      | `true`           | Run the esbuild size measurement. When `false`, `bytesSaved` is omitted and `minBytesSaved` isn't applied.                                                  |
 | `iterate`      | `boolean`                      | `true`           | Repeat the analysis until nothing new can change (see [Passes](#passes)). `false` makes one pass.                                                           |
-| `onFile`       | `(result: FileResult) => void` |                  | Called as soon as each file is done. With measuring on, splits are done only after every file is analysed, since savings are estimated together.            |
+| `onFile`       | `(result: FileResult) => void` |                  | Called as soon as each file is done. Changes are done only after every pass, since savings are estimated together; skips are reported as they're found.     |
 
 ```ts
 type SplitResult = { files: FileResult[] };
@@ -49,6 +49,7 @@ type FileResult = {
     message: string;
     location?: { line: number; column: number };
   }>; // on changes only
+  requires?: string[]; // changes a later pass found this one after; apply them in the same run
   diff: string; // unified diff for every touched/created file
   outputs: Record<string, string>; // relative path -> new content
 };
@@ -117,8 +118,13 @@ skipped files again, in a pass that sees the earlier passes' outputs in memory, 
 changes nothing (at most 10 passes). Nothing is written in between, so a dry run shows the whole
 result. Each file is reported once, with its final result.
 
-A later pass's size estimate bundles the files a component imports as they are on disk, so a
-dependency of an earlier pass's split counts as it was before that split.
+Passes only plan. Size estimates and `minBytesSaved` are applied once, to every pass's changes
+together, so a component and the one that unblocked it share the code they both stop shipping (a
+parent and child that both import `marked` pass the threshold together). A change found in a later
+pass lists the earlier changes it needs in `requires` (the `"use client"` files that made its
+importers client modules); apply them in the same run. When one of those is dropped (below
+`minBytesSaved`), the change is dropped too and reported with its `imported-by-client` skip, whose
+message names the change it needs.
 
 The CLI's `--interactive` mode makes one pass, since you accept each change separately; run it
 again for the rest. The `rerun()` function it uses needs a single-pass run.
@@ -130,10 +136,16 @@ lists the codes; like skip codes, they're stable.
 
 - `timezone-dependent`: code that formats or reads a date in the local timezone used to run in the
   browser and now renders on the server: date-fns formatting and calendar functions (`format`,
-  `formatDistance`, `isToday`, `startOfDay`...), `.format()` on a dayjs or moment value without
+  `formatISO`, `startOfDay`, `isSameDay`...), `.format()` on a dayjs or moment value without
   `.tz()`, `.utc()` or `.utcOffset()` earlier in the chain, and `Date`'s local getters
-  (`getHours()`, `getDate()`, `toDateString()`...). The `getUTC*()` methods and date-fns-tz don't
-  warn. At most five per file; the last one counts the rest.
+  (`getHours()`, `getDate()`, `toDateString()`...), including on optional values (`at?.getHours()`).
+  A call to a function imported from another project file is followed (three calls deep) and warned
+  at the call: `formatStamp() calls format() from date-fns (lib/dates.ts:4), ...`. The `getUTC*()`
+  methods and date-fns-tz don't warn. Calls that read the current time (`formatDistanceToNow`,
+  `isToday`, `dayjs()`, `.fromNow()`) don't get here: like `Date.now()`, they stay in islands. At
+  most five per file; the last one counts the rest.
+- `ignore-outside-header`: an `auto-server-split-ignore` comment that isn't in the file header (for
+  example above the component, after the imports), so it doesn't apply.
 
 ## `SKIP_CODES` and `SKIP_TITLES`
 

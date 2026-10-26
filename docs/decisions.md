@@ -498,7 +498,7 @@ A second run listed every generated `X.client.tsx` as a skip (`fully-interactive
   counts the applied ones and lists the rest as `files declined`.
 - A helper component moved whole into the island file keeps its own name; the README now says so.
 
-## Unreleased — fewer manual steps, fewer skips
+## 1.0.2 — fewer manual steps, fewer skips
 
 ### Removing unused directives is opt-in
 
@@ -530,9 +530,19 @@ only they are held back and analysed again; every other result is reported when 
 next pass applies the last pass's outputs to the same ts-morph project in memory, including the
 new island files, and rebuilds the module graph with a resolution host that sees those files.
 Nothing is written in between, so a dry run shows the final result, and each file is reported
-once. Size estimates in later passes still bundle a candidate's imports from disk (esbuild's
-synchronous API has no plugins to serve the in-memory files), which can only affect a dependency
-shared with an earlier pass's split. Passes stop when one changes nothing, at 10 at most.
+once. Passes stop when one changes nothing, at 10 at most.
+
+Passes only plan; `minBytesSaved` is applied once, to every pass's changes together. Applying it
+per pass deadlocked chains: a parent and the child it renders that share a dependency each looked
+like they saved nothing while the other still shipped it, so the parent was dropped, the pass
+changed nothing, and the child was never analysed again (the 1.0.1 fix for sibling splits didn't
+reach them). The estimate measures the whole set against the first pass's module graph, which is
+the project on disk: a later pass's change only rewrites its own file and adds an island, which the
+estimate models directly, so nothing from the in-memory project is needed (esbuild's synchronous
+API couldn't serve it anyway). Each later-pass change records the changes it needs: the
+`"use client"` files above it in the original graph, which must all have changed for its importers
+to be server modules. Dropping one drops the changes that need it, and they're reported with the
+skip they had before, saying what they'd need.
 
 `--interactive` makes one pass: the user accepts each change separately, and a later pass would
 assume the earlier changes were accepted. `rerun()` (used by interactive renames) refuses after a
@@ -565,8 +575,10 @@ only way to say so was an `exclude` glob in the config, away from the code. An
 `auto-server-split-ignore` comment sits next to the directive it explains, carries its reason
 into the report, and survives renames. It's only read in the file header (before the first
 import, or on the directive's line), so a comment deep in a component can't switch a file off by
-accident. It's a skip (`ignored`) rather than a silent omission, so the summary still accounts for
-every `"use client"` file, and size estimates don't assume an ignored file is split.
+accident. A comment that's in the wrong place is reported as an `ignore-outside-header` warning
+on the change, so someone who meant to opt out finds out. It's a skip (`ignored`) rather than a
+silent omission, so the summary still accounts for every `"use client"` file, and size estimates
+don't assume an ignored file is split.
 
 ### Timezone risk is a warning, not a skip
 
@@ -579,7 +591,18 @@ detected from types, not names: a date-fns function by where its declaration liv
 moment `.format()` by the receiver's type (unless `.tz()`, `.utc()` or `.utcOffset()` is in the
 chain), and `Date`'s local getters on values typed `Date`. Code that stays in an island doesn't
 warn, while code in a server-rendered slot does. date-fns-tz and the `getUTC*()` methods are
-timezone-explicit and never warn.
+timezone-explicit and never warn. Apps usually format dates in a helper module, so a call to a
+function imported from another project file is followed (three calls deep, through function
+declarations and arrow functions) and warned at the call.
+
+Calls that read the current time are different: `formatDistanceToNow()`, `isToday()`, `dayjs()` and
+`.fromNow()` would be computed once on the server, and on a static page once at build time ("today:
+yes" forever). That's the `Date.now()` problem, which the tool already solves by keeping the call
+in an island, so these are client-only markers too, detected from types like the warnings. A helper
+module that calls one is client-only as a whole, like one that calls `Date.now()`.
+
+The ESLint rule's autofix for unused directives doesn't apply a change with a warning: editors
+run `--fix` on save, which would apply it unseen. It becomes a suggestion, offered as a quick fix.
 
 ### CI that fits existing apps
 
@@ -595,4 +618,12 @@ The GitHub output is the text output plus workflow-command annotations, not a se
 so the job log reads the same. Annotation paths are made relative to `GITHUB_WORKSPACE`, because
 GitHub resolves them from the repository root while results are relative to the project root. The
 action passes its inputs through environment variables, never into the script text, so an input
-can't inject shell code.
+can't inject shell code. It checks the version it's about to run first: before 1.0.2 there's no
+`--format`, and the old CLI read `github` as a path ("github does not exist"), so the action stops
+with an error that says which version it needs.
+
+Changed files come from git with `-z`, so paths arrive as they are: git otherwise quotes and
+escapes non-ASCII names (`"B\303\274cher.tsx"`), which then matched no file and dropped it from the
+check without a word. Every command the reports print (an annotation's "Apply with", the markdown
+report's last line) quotes paths that need it and includes the changes the file needs and
+`--remove-unused-directives` when it removes a directive, so it works when pasted as is.

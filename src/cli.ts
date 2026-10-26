@@ -45,6 +45,14 @@ function savedText(file: FileResult, assumes = ""): string {
       : "";
 }
 
+/** The changes a later pass found this one after: they have to be applied with it. */
+function needsText(file: FileResult): string {
+  const needs = file.requires ?? [];
+  if (needs.length === 0) return "";
+  const list = needs.length <= 2 ? needs.join(" and ") : `${needs.length} other changes`;
+  return ` · ${pc.dim(`needs ${list} changed too`)}`;
+}
+
 function describeWarnings(file: FileResult): string {
   return (file.warnings ?? [])
     .map((w) => {
@@ -60,7 +68,7 @@ function describeChange(file: FileResult): string {
 
 function describeChangeLine(file: FileResult): string {
   if (file.status === "directive-removed")
-    return `${pc.green('✔ removed "use client"')} ${pc.bold(file.file)} · no client-only code${savedText(file)}`;
+    return `${pc.green('✔ removed "use client"')} ${pc.bold(file.file)} · no client-only code${savedText(file)}${needsText(file)}`;
   const islands = file.islands.map(
     (i) => `${i.name} <${i.rootTag}>${i.props.length ? ` (props: ${i.props.join(", ")})` : ""}`,
   );
@@ -69,10 +77,10 @@ function describeChangeLine(file: FileResult): string {
     shared.length === 0
       ? ""
       : shared.length <= 2
-        ? `; assumes ${shared.join(" and ")} ${shared.length === 1 ? "is" : "are"} split too`
-        : `; assumes ${shared.length} other files are split too`;
+        ? `; assumes ${shared.join(" and ")} ${shared.length === 1 ? "is" : "are"} changed too`
+        : `; assumes ${shared.length} other files are changed too`;
   const saved = savedText(file, assumes);
-  return `${pc.green("✔ split")} ${pc.bold(file.file)} · ${file.islands.length} island${file.islands.length === 1 ? "" : "s"} · ${Math.round(file.staticRatio * 100)}% static${saved}\n    ${islands.join("\n    ")}`;
+  return `${pc.green("✔ split")} ${pc.bold(file.file)} · ${file.islands.length} island${file.islands.length === 1 ? "" : "s"} · ${Math.round(file.staticRatio * 100)}% static${saved}${needsText(file)}\n    ${islands.join("\n    ")}`;
 }
 
 function describeSkip(file: FileResult, verbose: boolean): string {
@@ -94,7 +102,16 @@ function dirtyFiles(cwd: string, files: string[]): string[] | undefined {
   try {
     const out = execFileSync(
       "git",
-      ["status", "--porcelain", "--ignored", "--untracked-files=all", "--", ...files],
+      [
+        "-c",
+        "core.quotePath=false",
+        "status",
+        "--porcelain",
+        "--ignored",
+        "--untracked-files=all",
+        "--",
+        ...files,
+      ],
       {
         cwd,
         encoding: "utf8",
@@ -121,12 +138,13 @@ function changedFiles(root: string, ref: string): string[] | undefined {
   const git = (...args: string[]) =>
     execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
   try {
+    // -z: paths as they are, not quoted and escaped (git quotes non-ASCII names otherwise).
     const out = [
-      git("diff", "--name-only", "--relative", "--diff-filter=ACMR", `${ref}...HEAD`),
-      git("diff", "--name-only", "--relative", "--diff-filter=ACMR", "HEAD"),
-      git("ls-files", "--others", "--exclude-standard"),
+      git("diff", "--name-only", "-z", "--relative", "--diff-filter=ACMR", `${ref}...HEAD`),
+      git("diff", "--name-only", "-z", "--relative", "--diff-filter=ACMR", "HEAD"),
+      git("ls-files", "-z", "--others", "--exclude-standard"),
     ];
-    return [...new Set(out.join("\n").split("\n").filter(Boolean))];
+    return [...new Set(out.join("\0").split("\0").filter(Boolean))];
   } catch {
     return undefined;
   }
@@ -232,6 +250,15 @@ const main = defineCommand({
     const paths = positional.map(
       (p) => path.relative(root, realpathSync(path.resolve(cwd, p))) || ".",
     );
+    if (args.json && args.format !== undefined && args.format !== "json") {
+      console.error(
+        pc.red(
+          `auto-server-split: --json is --format json, so it can't be combined with --format ${args.format}`,
+        ),
+      );
+      process.exitCode = EXIT_ERROR;
+      return;
+    }
     const format = args.json ? "json" : (args.format ?? "text");
     if (!["text", "json", "markdown", "github"].includes(format)) {
       console.error(

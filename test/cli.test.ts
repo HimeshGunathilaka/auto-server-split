@@ -198,6 +198,26 @@ describe("CLI", () => {
     expect(run([".", "--since", "--output=x"]).code).toBe(1);
   });
 
+  it("--since keeps files whose names git would quote", () => {
+    freshCopy(true);
+    const card = readFileSync(path.join(dir, "PostCard.tsx"), "utf8");
+    writeFileSync(path.join(dir, "Kärtchen.tsx"), card);
+    const untracked = run([".", "--since", "HEAD", "--check", "--no-measure"]);
+    expect(untracked.stdout).toContain('files scanned:  1 (1 with "use client")');
+    const g = (...args: string[]) => execFileSync("git", args, { cwd: dir, stdio: "ignore" });
+    g("add", "-A");
+    g("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "umlaut");
+    const committed = run([".", "--since", "HEAD~1", "--check", "--no-measure"]);
+    expect(committed.code).toBe(2);
+    expect(committed.stdout).toContain("Kärtchen.tsx");
+  });
+
+  it("prints the changes a chained change needs", () => {
+    freshCopy(false, path.join(repo, "test/fixtures/36-iterate-cascade/input"));
+    const r = run([".", "--no-measure"]);
+    expect(r.stdout).toContain("needs components/Shelf.tsx changed too");
+  });
+
   it("--write-baseline records the available changes, and --baseline leaves them alone", () => {
     freshCopy(false);
     const written = run([".", "--no-measure", "--write-baseline", "base.json"]);
@@ -240,6 +260,9 @@ describe("CLI", () => {
     expect(r.stdout).toContain("files scanned:");
     expect(readFileSync(summary, "utf8")).toContain("## auto-server-split");
     expect(run([".", "--format", "yaml"]).stderr).toContain("--format must be text, json");
+    const both = run([".", "--json", "--format", "markdown"]);
+    expect(both.code).toBe(1);
+    expect(both.stderr).toContain("--json is --format json");
   });
 
   it("exits 1 for a path that does not exist", () => {

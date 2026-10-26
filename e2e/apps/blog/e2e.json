@@ -15,14 +15,15 @@
     "components/Card.tsx",
     "components/PriceTag.tsx",
     "components/CommentBox.tsx",
-    "components/SiteHeader.tsx"
+    "components/SiteHeader.tsx",
+    "components/Badge.tsx",
+    "components/NavLinks.tsx"
   ],
+  "expectDirectiveRemoved": ["components/ClientPanel.tsx"],
   "expectSkip": {
     "components/Banner.tsx": "state-spans-component",
     "components/ThemeShell.tsx": "context-provider",
-    "components/Footer.tsx": "server-env-difference",
-    "components/Badge.tsx": "imported-by-client",
-    "components/ClientPanel.tsx": "no-islands"
+    "components/Footer.tsx": "server-env-difference"
   },
   "routes": [
     {
@@ -61,6 +62,9 @@
         { "click": "button:has-text('About')", "waitForURL": "**/about" }
       ]
     },
-    { "path": "/about", "steps": [] }
+    {
+      "path": "/about",
+      "steps": [{ "click": "a.nav-link:has-text('Lists')", "waitForURL": "**/lists" }]
+    }
   ]
 }

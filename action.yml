@@ -19,7 +19,7 @@ inputs:
     description: A baseline file (written with --write-baseline) whose files are left as they are.
     default: ""
   version:
-    description: The auto-server-split version to run. Empty runs the project's own installed copy.
+    description: The auto-server-split version to run (1.0.2 or later). Empty runs the project's own installed copy, which must be 1.0.2 or later.
     default: ""
   fail-on-changes:
     description: Fail the step when a change is available.
@@ -50,6 +50,23 @@ runs:
         else
           runner=(npx --no-install auto-server-split)
         fi
+        # --format github, --since and --baseline need 1.0.2 or later.
+        installed=$("${runner[@]}" --version 2>/dev/null | tail -n 1 || true)
+        case "$installed" in
+          "")
+            echo "::error::auto-server-split isn't installed in $PWD. Add it to the project's devDependencies, or set the action's version input."
+            exit 1
+            ;;
+          0.* | 1.0.0 | 1.0.1)
+            if [ -n "$AUTO_SPLIT_VERSION" ]; then
+              fix="Set the action's version input to 1.0.2 or later."
+            else
+              fix="Upgrade the project's copy, or set the action's version input."
+            fi
+            echo "::error::auto-server-split $installed is too old for this action, which needs 1.0.2 or later. $fix"
+            exit 1
+            ;;
+        esac
         set +e
         # Paths and extra arguments are word-split on purpose.
         # shellcheck disable=SC2086

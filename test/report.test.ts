@@ -30,7 +30,7 @@ describe("githubAnnotations", () => {
       (file) => `web/${file}`,
     );
     expect(notice).toBe(
-      "::notice file=web/app/(shop)%2Ca.tsx,line=7,title=Split available::75%25 static, 1 island (CardButton <button>), ~2.1 KB gzip saved. Apply with: npx auto-server-split app/(shop),a.tsx --write",
+      "::notice file=web/app/(shop)%2Ca.tsx,line=7,title=Split available::75%25 static, 1 island (CardButton <button>), ~2.1 KB gzip saved. Apply with: npx auto-server-split 'app/(shop),a.tsx' --write",
     );
     expect(warning).toBe(
       "::warning file=web/app/(shop)%2Ca.tsx,line=9,title=timezone-dependent::50%25 sure%0Areally",
@@ -86,6 +86,31 @@ describe("markdownReport", () => {
     expect(text).toContain('| `B.tsx` | remove `"use client"` | – | – |');
     expect(text).toContain("- `B.tsx`: a \\| b");
     expect(text).toContain("| `no-islands`: no client-only code found");
-    expect(text).toContain("Apply with `npx auto-server-split --write`");
+    // B removes a directive, so the command has to say so.
+    expect(text).toContain("Apply with `npx auto-server-split --remove-unused-directives --write`");
+  });
+
+  it("names the changes a chained change needs", () => {
+    const text = markdownReport(
+      [base("Shelf.tsx", {}), base("Book.tsx", { requires: ["Shelf.tsx"] })],
+      2,
+      false,
+    );
+    expect(text).toContain("| `Book.tsx` | split (needs `Shelf.tsx`) | `CardButton` | – |");
+    expect(text).toContain(
+      "Apply with `npx auto-server-split --write` (or pass the files to change, with the files they need).",
+    );
+  });
+});
+
+describe("apply commands in annotations", () => {
+  it("include the changes a file needs, quote paths, and add --remove-unused-directives", () => {
+    const [, book] = githubAnnotations([
+      base("components/Shelf Host.tsx", { status: "directive-removed", islands: [] }),
+      base("components/Book.tsx", { requires: ["components/Shelf Host.tsx"] }),
+    ]);
+    expect(book).toContain(
+      "Apply with: npx auto-server-split 'components/Shelf Host.tsx' components/Book.tsx --remove-unused-directives --write",
+    );
   });
 });

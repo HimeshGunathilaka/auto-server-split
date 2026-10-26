@@ -16,7 +16,7 @@ export default [
 Reports on the `"use client"` directive of files the CLI would split:
 
 ```
-PostCard is 80% static with 1 interactive island (<button>). Run: npx auto-server-split app/blog/PostCard.tsx --write
+PostCard is 80% static with 1 interactive island (<button>). Check first (line 13): format() from date-fns uses the timezone of the machine that renders it, which is now the server; format with an explicit timezone (date-fns-tz's formatInTimeZone) or keep it in an island. Run: npx auto-server-split app/blog/PostCard.tsx --write
 ```
 
 It runs the same engine as the CLI with the same config file, then the same self-check and the
@@ -53,6 +53,11 @@ Panel uses no client-only code, and every importer is a Server Component, so "us
 This one has an autofix (`eslint --fix`, or the editor's quick fix), because it only edits the
 linted file: it removes the directive. `minBytesSaved` and the rule's `minStaticRatio` don't apply
 to it, as they don't in the CLI.
+
+When the change has a [warning](api.md#warnings) (date code that would now render in the server's
+timezone, or a misplaced ignore comment), the message names it, and removing the directive is a
+suggestion instead: the editor offers it as a quick fix, but `eslint --fix` and fix-on-save leave
+the file alone until someone has checked it. Split reports name the first warning too.
 
 ### Typed and untyped linting
 

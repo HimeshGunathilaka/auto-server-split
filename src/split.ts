@@ -4,11 +4,11 @@ import { createTwoFilesPatch } from "diff";
 import fg from "fast-glob";
 import { ts } from "ts-morph";
 import { analyzeFileShape } from "./analysis/components.js";
-import { findIgnoreComment } from "./analysis/directives.js";
-import type { Warning } from "./analysis/timezone.js";
+import { findIgnoreComment, findIgnoreCommentOutsideHeader } from "./analysis/directives.js";
+import type { Warning } from "./analysis/warnings.js";
 import { findTimezoneWarnings } from "./analysis/timezone.js";
 import type { AnalysisContext } from "./analysis/context.js";
-import { locOf } from "./analysis/context.js";
+import { lineCol, locOf } from "./analysis/context.js";
 import type { FrameworkAdapter } from "./analysis/framework.js";
 import { buildImportTable } from "./analysis/importTable.js";
 import { checkImporters } from "./analysis/importers.js";
@@ -157,69 +157,107 @@ export async function runSplit(options: SplitOptions = {}): Promise<
     options.onFile?.(result);
   };
 
-  /**
-   * Plans `files` against `ctx`. A file's estimated saving depends on the other splits, so every
-   * file is analysed first.
-   */
-  const runPass = async (
-    ctx: RunContext,
-    files: string[],
-    done: (file: string, result: FileResult) => void,
-  ) => {
-    const planned = new Map<string, Planned>();
-    for (const file of files) {
-      const outcome = await planSafely(ctx, file);
-      if (!outcome.ok) done(file, skippedResult(ctx, file, outcome.skip));
-      else if (ctx.measurer) planned.set(file, outcome.value);
-      else done(file, changeResult(ctx, file, outcome.value, {}));
-    }
-    if (!ctx.measurer || planned.size === 0) return;
-    ctx.estimate = estimateSavings(
-      ctx,
-      [...planned.values()].map((p) => p.candidate),
-      new Set(targets),
-    );
-    for (const [file, value] of planned) {
-      const saving = ctx.estimate.outcome(value.candidate);
-      done(
-        file,
-        saving.ok
-          ? changeResult(ctx, file, value, saving.value)
-          : skippedResult(ctx, file, saving.skip),
-      );
-    }
-  };
-
   // A file imported by a client module may become changeable once that importer is split (or loses
   // its directive), so with `iterate` its skip is held back and the file is analysed again in a
-  // pass that sees the earlier changes. Every other result is final when it's made.
+  // pass that sees the earlier changes. Passes only plan: a change's saving depends on the others,
+  // including the ones later passes find, so thresholds are applied once every pass is done.
   const held = new Map<string, FileResult>();
+  const planned = new Map<string, { ctx: RunContext; value: Planned }>();
+  /** Files planned in a later pass, with the imported-by-client skip they had before it. */
+  const unblocked = new Map<string, FileResult>();
+  let extras: SplitCandidate[] | undefined;
+  // The other "use client" files in `include` are analysed as they are on disk, before a pass
+  // changes the project in memory.
+  const extraCandidatesOnce = () => (extras ??= extraCandidates(run, new Set(targets)));
   let ctx = run;
   let files = targets.filter((file) => run.graph.nodes.get(file)?.directive === "use client");
   let passes = 0;
   while (files.length > 0) {
     passes++;
-    const changes: FileResult[] = [];
-    await runPass(ctx, files, (file, result) => {
-      if (isChange(result)) changes.push(result);
-      if (iterate && result.skipped?.code === "imported-by-client") {
-        held.set(file, result);
+    const changed: Planned[] = [];
+    for (const file of files) {
+      const outcome = await planSafely(ctx, file);
+      if (outcome.ok) {
+        const before = held.get(file);
+        if (before) unblocked.set(file, before);
+        held.delete(file);
+        planned.set(file, { ctx, value: outcome.value });
+        changed.push(outcome.value);
+      } else if (iterate && outcome.skip.code === "imported-by-client") {
+        held.set(file, skippedResult(ctx, file, outcome.skip));
       } else {
         held.delete(file);
-        report(file, result);
+        report(file, skippedResult(ctx, file, outcome.skip));
       }
-    });
-    if (!iterate || changes.length === 0 || held.size === 0 || passes >= MAX_PASSES) break;
+    }
+    if (!iterate || changed.length === 0 || held.size === 0 || passes >= MAX_PASSES) break;
+    if (run.measurer) extraCandidatesOnce();
     const outputs = new Map(
-      changes.flatMap((c) =>
-        Object.entries(c.outputs).map(
+      changed.flatMap((p) =>
+        Object.entries(p.outputs).map(
           ([relPath, text]) => [path.join(root, relPath), text] as const,
         ),
       ),
     );
     ctx = nextPassContext(ctx, outputs);
-    if (Measurer) ctx.measurer = new Measurer(root, ctx.graph, ctx.loaded.configFile);
     files = [...held.keys()];
+  }
+
+  // A change found in a later pass needs the earlier changes that made its importers Server
+  // Components: the "use client" files above it in the original module graph.
+  const requires = new Map<string, string[]>();
+  for (const file of unblocked.keys()) {
+    requires.set(
+      file,
+      [...run.graph.clientRootsAbove(file)].filter((f) => planned.has(f)),
+    );
+  }
+  if (run.measurer && planned.size > 0) {
+    run.estimate = estimateSavings(
+      run,
+      [...planned.values()].map((p) => p.value.candidate),
+      new Set(targets),
+      { extras: extraCandidatesOnce(), requires },
+    );
+  }
+  const kept = run.estimate?.kept ?? new Set(planned.keys());
+  const allRequired = (file: string): string[] => {
+    const out = new Set<string>();
+    const pending = [...(requires.get(file) ?? [])];
+    for (let r = pending.pop(); r; r = pending.pop()) {
+      if (out.has(r)) continue;
+      out.add(r);
+      pending.push(...(requires.get(r) ?? []));
+    }
+    return [...out].map((f) => rel(root, f)).sort();
+  };
+  // Planned in pass order, so a file's requirements are reported before it.
+  for (const [file, { ctx: fileCtx, value }] of planned) {
+    const missing = (requires.get(file) ?? []).filter((r) => !kept.has(r));
+    const before = unblocked.get(file);
+    if (missing.length > 0 && before?.skipped) {
+      const why = missing
+        .map((r) => {
+          const code = results.get(r)?.skipped?.code;
+          return `${rel(root, r)}${code ? ` (skipped: ${code})` : ""}`;
+        })
+        .join(", ");
+      report(file, {
+        ...before,
+        skipped: {
+          ...before.skipped,
+          message: `${before.skipped.message}; it can be split along with ${why}, which isn't changed`,
+        },
+      });
+      continue;
+    }
+    const saving = run.estimate ? run.estimate.outcome(value.candidate) : ok({});
+    report(
+      file,
+      saving.ok
+        ? changeResult(fileCtx, file, value, saving.value, allRequired(file))
+        : skippedResult(fileCtx, file, saving.skip),
+    );
   }
   for (const [file, result] of held) report(file, result);
   const allFiles = targets.flatMap((file) => results.get(file) ?? []);
@@ -253,8 +291,8 @@ export async function runSplit(options: SplitOptions = {}): Promise<
 /**
  * The context for another pass: `outputs` (absolute path -> text, the last pass's changes) are
  * applied to the project in memory, and the module graph and classifiers are rebuilt on top. The
- * earlier contexts share the project, so they no longer describe the files on disk. Size estimates
- * still bundle the files a candidate imports as they are on disk.
+ * earlier contexts share the project, so they no longer describe the files on disk; only their
+ * module graphs (and the first context's measurer, which bundles from disk) still do.
  */
 function nextPassContext(run: RunContext, outputs: ReadonlyMap<string, string>): RunContext {
   const { loaded } = run;
@@ -336,7 +374,13 @@ function skippedResult(run: RunContext, file: string, skipped: Skip): FileResult
   };
 }
 
-function changeResult(run: RunContext, file: string, value: Planned, saving: Saving): FileResult {
+function changeResult(
+  run: RunContext,
+  file: string,
+  value: Planned,
+  saving: Saving,
+  requires: string[] = [],
+): FileResult {
   const relFile = rel(run.root, file);
   const diff = Object.entries(value.outputs)
     .map(([relPath, content]) => {
@@ -360,6 +404,7 @@ function changeResult(run: RunContext, file: string, value: Planned, saving: Sav
     ...(saving.bytesSaved ? { bytesSaved: saving.bytesSaved } : {}),
     ...(saving.measureError ? { measureError: saving.measureError } : {}),
     ...(value.warnings.length > 0 ? { warnings: value.warnings } : {}),
+    ...(requires.length > 0 ? { requires } : {}),
     diff,
     outputs: value.outputs,
   };
@@ -420,6 +465,18 @@ export function analyzeFile(
       { line: lc.line + 1, column: lc.character + 1 },
     );
   }
+  const strayIgnore = findIgnoreCommentOutsideHeader(sf);
+  const ignoreWarnings: Warning[] =
+    strayIgnore === undefined
+      ? []
+      : [
+          {
+            code: "ignore-outside-header",
+            message:
+              "this auto-server-split-ignore comment isn't in the file header, so it doesn't apply; move it above the first import or onto the \"use client\" line",
+            location: lineCol(sf, strayIgnore),
+          },
+        ];
   const syntax = program.getSyntacticDiagnostics(sf)[0];
   if (syntax) {
     const lc = sf.getLineAndCharacterOfPosition(syntax.start ?? 0);
@@ -543,7 +600,7 @@ export function analyzeFile(
       isJs,
       originalText: sf.text,
       componentName,
-      warnings: findTimezoneWarnings(ctx, () => true),
+      warnings: [...findTimezoneWarnings(ctx, () => true), ...ignoreWarnings],
     });
   }
   if (components.every((c) => wholesale.has(c) || c.exported === "none") && plans.length === 0) {
@@ -582,12 +639,15 @@ export function analyzeFile(
   }
   const within = (outer: ts.Node, node: ts.Node) =>
     node.getStart(sf) >= outer.getStart(sf) && node.getEnd() <= outer.getEnd();
-  const warnings = findTimezoneWarnings(
-    ctx,
-    (node) =>
-      serverSlots.some((slot) => within(slot, node)) ||
-      !toIsland.some((moved) => within(moved, node)),
-  );
+  const warnings = [
+    ...findTimezoneWarnings(
+      ctx,
+      (node) =>
+        serverSlots.some((slot) => within(slot, node)) ||
+        !toIsland.some((moved) => within(moved, node)),
+    ),
+    ...ignoreWarnings,
+  ];
 
   // ---- output location --------------------------------------------------------------------------
   if (existsSync(islandFile) || loaded.project.getSourceFile(islandFile)) {
@@ -730,41 +790,67 @@ export type SavingsEstimate = {
    * along with the candidates that pass `minBytesSaved` together, with the threshold applied.
    */
   outcome(candidate: SplitCandidate): Outcome<Saving>;
+  /** The candidates the estimates assume are applied: those that pass `minBytesSaved` together. */
+  kept: ReadonlySet<string>;
 };
 
 /**
- * Size estimates assume every split the tool would propose for the project is applied: `planned`
- * (the run's own splits) plus the splits of the other "use client" files in the config's
- * `include`, so a file's estimate doesn't depend on which paths a run covers. `decided` files (the
- * run's targets) are never re-analysed. A split below `minBytesSaved` (or one that can't be
- * measured, unless the threshold is 0) is dropped, which can lower the others' savings: code they
- * shared with it keeps shipping. So dropping repeats until the set is stable. Removing an unused
- * directive creates no file, so `minBytesSaved` doesn't apply to it. `prepare` runs
- * before each extra file is analysed (the ESLint rule loads it into its lazy project). Synchronous.
+ * The changes the other "use client" files in the config's `include` (not `decided`) would get,
+ * analysed as they are on disk. `prepare` runs before each file is analysed (the ESLint rule loads
+ * it into its lazy project). Synchronous.
  */
-export function estimateSavings(
+export function extraCandidates(
   run: RunContext,
-  planned: SplitCandidate[],
-  decided: ReadonlySet<string> = new Set(),
+  decided: ReadonlySet<string>,
   prepare?: (file: string) => void,
-): SavingsEstimate {
-  const { measurer, config } = run;
-  if (!measurer) return { outcome: () => ok({}) };
-  const candidates = new Map(planned.map((c) => [c.file, c]));
-  for (const file of selectTargets(run.root, undefined, config, run.baseline)) {
-    if (candidates.has(file) || decided.has(file)) continue;
+): SplitCandidate[] {
+  const out: SplitCandidate[] = [];
+  for (const file of selectTargets(run.root, undefined, run.config, run.baseline)) {
+    if (decided.has(file)) continue;
     if (run.graph.nodes.get(file)?.directive !== "use client") continue;
     try {
       prepare?.(file);
       const analyzed = analyzeFile(run, file);
       if (analyzed.ok) {
         const { originalText, island } = analyzed.value;
-        candidates.set(file, { file, originalText, ...(island ? { island } : {}) });
+        out.push({ file, originalText, ...(island ? { island } : {}) });
       }
     } catch {
       // Reported when that file itself is split or linted; here it just isn't a split.
     }
   }
+  return out;
+}
+
+/**
+ * Size estimates assume every split the tool would propose for the project is applied: `planned`
+ * (the run's own splits, from every pass) plus the splits of the other "use client" files in the
+ * config's `include` (`extras`, else {@link extraCandidates}), so a file's estimate doesn't depend
+ * on which paths a run covers. `decided` files (the run's targets) are never re-analysed. A split
+ * below `minBytesSaved` (or one that can't be measured, unless the threshold is 0) is dropped,
+ * which can lower the others' savings: code they shared with it keeps shipping. A candidate whose
+ * `requires` (the changes a later pass found it after) aren't all kept is dropped too. So dropping
+ * repeats until the set is stable. Removing an unused directive creates no file, so
+ * `minBytesSaved` doesn't apply to it. Measured against `run`'s module graph, which is the project
+ * on disk: the candidates of later passes change only their own file and add an island. Synchronous.
+ */
+export function estimateSavings(
+  run: RunContext,
+  planned: SplitCandidate[],
+  decided: ReadonlySet<string> = new Set(),
+  options: {
+    prepare?: (file: string) => void;
+    extras?: SplitCandidate[];
+    requires?: ReadonlyMap<string, readonly string[]>;
+  } = {},
+): SavingsEstimate {
+  const { measurer, config } = run;
+  if (!measurer) return { outcome: () => ok({}), kept: new Set(planned.map((c) => c.file)) };
+  const requires = options.requires ?? new Map<string, readonly string[]>();
+  const candidates = new Map(
+    (options.extras ?? extraCandidates(run, decided, options.prepare)).map((c) => [c.file, c]),
+  );
+  for (const c of planned) candidates.set(c.file, c);
 
   const passes = (c: SplitCandidate, m: Measurement | undefined): boolean =>
     m !== undefined &&
@@ -775,7 +861,11 @@ export function estimateSavings(
   let kept = [...candidates.values()];
   let measured = measurer.measure(kept);
   for (;;) {
-    const next = kept.filter((c) => passes(c, measured.get(c.file)));
+    const files = new Set(kept.map((c) => c.file));
+    const next = kept.filter(
+      (c) =>
+        passes(c, measured.get(c.file)) && (requires.get(c.file) ?? []).every((r) => files.has(r)),
+    );
     if (next.length === kept.length) break;
     kept = next;
     measured = measurer.measure(kept);
@@ -783,6 +873,7 @@ export function estimateSavings(
   const final = kept;
   const finalMeasured = measured;
   return {
+    kept: new Set(final.map((c) => c.file)),
     outcome: (candidate) => {
       const same = final.find((c) => c.file === candidate.file);
       const m =

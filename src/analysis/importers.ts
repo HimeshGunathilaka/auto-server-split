@@ -92,7 +92,10 @@ export function checkImporters(
       if (graph.isClient(importer)) {
         const root = graph.clientRootOf(importer);
         const via = root && root !== importer ? `, reached from ${graph.rel(root)}` : "";
-        return skip("imported-by-client", `imported by ${rel} (client${via})`);
+        const what = graph.generated.has(importer)
+          ? "the client island this run generates"
+          : "client";
+        return skip("imported-by-client", `imported by ${rel} (${what}${via})`);
       }
       if (edge.kind === "dynamic") {
         return skip("dynamic-import", `loaded with import() by ${rel}`);

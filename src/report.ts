@@ -14,6 +14,23 @@ const savingText = (f: FileResult): string =>
 
 const mdEscape = (text: string) => text.replace(/\|/g, "\\|").replace(/\n/g, " ");
 
+/** An argument quoted for a POSIX shell when it needs it: `app/(shop)/My Card.tsx` gets quotes. */
+export function shellQuote(arg: string): string {
+  return /^[\w@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replace(/'/g, "'\\''")}'`;
+}
+
+/**
+ * The command that applies one change: the file, plus the changes it needs (`requires`), and
+ * `--remove-unused-directives` when one of them removes a directive.
+ */
+function applyCommand(f: FileResult, statusOf: (file: string) => FileResult["status"] | undefined) {
+  const files = [...(f.requires ?? []), f.file];
+  const removes = files.some(
+    (file) => (file === f.file ? f.status : statusOf(file)) === "directive-removed",
+  );
+  return `npx auto-server-split ${files.map(shellQuote).join(" ")}${removes ? " --remove-unused-directives" : ""} --write`;
+}
+
 /**
  * A markdown report of the run, for a pull request comment or a CI job summary: the changes
  * available (or applied), their warnings, and the skips grouped by reason.
@@ -41,7 +58,10 @@ export function markdownReport(
       "| --- | --- | --- | --- |",
     );
     for (const f of changes) {
-      const change = f.status === "split" ? "split" : 'remove `"use client"`';
+      const needs = f.requires?.length
+        ? ` (needs ${f.requires.map((r) => `\`${r}\``).join(", ")})`
+        : "";
+      const change = (f.status === "split" ? "split" : 'remove `"use client"`') + needs;
       const islands = f.islands.map((i) => `\`${i.name}\``).join(", ") || "–";
       lines.push(`| \`${f.file}\` | ${change} | ${islands} | ${savingText(f)} |`);
     }
@@ -54,8 +74,16 @@ export function markdownReport(
             `- \`${f.file}${w.location ? `:${w.location.line}` : ""}\`: ${mdEscape(w.message)}`,
           );
     }
-    if (!applied)
-      lines.push("", "Apply with `npx auto-server-split --write` (or pass the files to change).");
+    if (!applied) {
+      const flag = changes.some((f) => f.status === "directive-removed")
+        ? " --remove-unused-directives"
+        : "";
+      const needs = changes.some((f) => f.requires?.length) ? ", with the files they need" : "";
+      lines.push(
+        "",
+        `Apply with \`npx auto-server-split${flag} --write\` (or pass the files to change${needs}).`,
+      );
+    }
   }
   if (skipped.length > 0) {
     const byCode = new Map<SkipCode, FileResult[]>();
@@ -92,6 +120,8 @@ export function githubAnnotations(
   repoPath: (file: string) => string = (file) => file,
 ): string[] {
   const out: string[] = [];
+  const byFile = new Map(files.map((f) => [f.file, f.status]));
+  const statusOf = (file: string) => byFile.get(file);
   const command = (
     kind: "notice" | "warning",
     file: string,
@@ -110,7 +140,7 @@ export function githubAnnotations(
           f.file,
           f.islands[0]?.line,
           "Split available",
-          `${Math.round(f.staticRatio * 100)}% static, ${f.islands.length} island${f.islands.length === 1 ? "" : "s"} (${islands})${saving}. Apply with: npx auto-server-split ${f.file} --write`,
+          `${Math.round(f.staticRatio * 100)}% static, ${f.islands.length} island${f.islands.length === 1 ? "" : "s"} (${islands})${saving}. Apply with: ${applyCommand(f, statusOf)}`,
         ),
       );
     } else if (f.status === "directive-removed") {
@@ -120,7 +150,7 @@ export function githubAnnotations(
           f.file,
           1,
           '"use client" is unnecessary',
-          `No client-only code, and every importer is a Server Component. Apply with: npx auto-server-split ${f.file} --remove-unused-directives --write`,
+          `No client-only code, and every importer is a Server Component. Apply with: ${applyCommand(f, statusOf)}`,
         ),
       );
     } else if (

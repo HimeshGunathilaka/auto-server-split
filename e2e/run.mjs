@@ -1,7 +1,8 @@
 // End-to-end check. For every app under e2e/apps:
 //   1. copy it twice into e2e/.tmp (inside the repo, so next/react resolve from the root node_modules)
 //   2. `next build` the untouched copy ("before")
-//   3. run the codemod with --write on the other copy, check the expected splits/skips, `next build` it ("after")
+//   3. run the codemod with --write on the other copy, check the expected splits, removed directives
+//      and skips, `next build` it ("after")
 //   4. `next start` both, fetch every route, normalise the HTML and require it to be identical
 //   5. drive both with Playwright through the same interactions and require identical DOM after every step
 //      (and that each click actually changed something, so islands are proven interactive)
@@ -197,6 +198,14 @@ async function capturePhase(app, phase, browser) {
       else
         fail(
           `expected ${file} to be split, got ${r?.status ?? "no result"} ${r?.skipped ? `[${r.skipped.code}] ${r.skipped.message}` : ""}`,
+        );
+    }
+    for (const file of spec.expectDirectiveRemoved ?? []) {
+      const r = byFile.get(file);
+      if (r?.status === "directive-removed") ok(`removed "use client" from ${file}`);
+      else
+        fail(
+          `expected "use client" to be removed from ${file}, got ${r?.status ?? "no result"} ${r?.skipped ? `[${r.skipped.code}] ${r.skipped.message}` : ""}`,
         );
     }
     for (const [file, code] of Object.entries(spec.expectSkip ?? {})) {

@@ -19,6 +19,11 @@ removed, that module would pull a Server Component into the client bundle, which
 import PostCard from "./PostCard"; // ← PostCard is skipped: imported by components/Sidebar.tsx (client)
 ```
 
+With passes on (the default), a file skipped for this reason is analysed again once its importer
+is split or loses its directive. If the importer can be changed but isn't (for example it's below
+`minBytesSaved`), the message says so: `imported by components/Shelf.tsx (client); it can be split
+along with components/Shelf.tsx (skipped: below-threshold), which isn't changed`.
+
 Only a client module gives this code. Importers outside the TypeScript project (a test file the
 tsconfig excludes, a `.js` file without `allowJs`) are checked without type information and may
 render the component as `<PostCard />` like any other server module; an importer whose usage can't
@@ -265,5 +270,8 @@ message repeats the reason written after the comment, if any:
 ```tsx
 "use client"; // auto-server-split-ignore: keeps the chart library out of the server bundle
 ```
+
+A comment anywhere else in the file (above the component, after the imports) doesn't apply; the
+file is analysed as usual, and a change to it carries an `ignore-outside-header` warning.
 
 **To fix:** nothing to do; remove the comment to have the file analysed again.

@@ -48,6 +48,16 @@ function commentText(comment: string): string {
  */
 export function findIgnoreComment(sf: ts.SourceFile): { reason: string; pos: number } | undefined {
   const text = sf.text;
+  for (const range of headerComments(sf)) {
+    const match = IGNORE_RE.exec(commentText(text.slice(range.pos, range.end)));
+    if (match) return { reason: (match[1] ?? "").replace(/\s+/g, " ").trim(), pos: range.pos };
+  }
+  return undefined;
+}
+
+/** Comments in the file header: before the first statement that isn't a directive, or on a directive's line. */
+function headerComments(sf: ts.SourceFile): ts.CommentRange[] {
+  const text = sf.text;
   const ranges: ts.CommentRange[] = [];
   for (const statement of sf.statements) {
     ranges.push(...(ts.getLeadingCommentRanges(text, statement.getFullStart()) ?? []));
@@ -57,9 +67,34 @@ export function findIgnoreComment(sf: ts.SourceFile): { reason: string; pos: num
     ranges.push(...(ts.getTrailingCommentRanges(text, statement.getEnd()) ?? []));
   }
   if (sf.statements.length === 0) ranges.push(...(ts.getLeadingCommentRanges(text, 0) ?? []));
-  for (const range of ranges) {
-    const match = IGNORE_RE.exec(commentText(text.slice(range.pos, range.end)));
-    if (match) return { reason: (match[1] ?? "").replace(/\s+/g, " ").trim(), pos: range.pos };
-  }
-  return undefined;
+  return ranges;
+}
+
+/**
+ * The position of an `auto-server-split-ignore` comment outside the file header, where it has no
+ * effect (above the component, after the imports), so the run can say so.
+ */
+export function findIgnoreCommentOutsideHeader(sf: ts.SourceFile): number | undefined {
+  const text = sf.text;
+  const seen = new Set(headerComments(sf).map((r) => r.pos));
+  let found: number | undefined;
+  const check = (ranges: ts.CommentRange[] | undefined) => {
+    for (const range of ranges ?? []) {
+      if (found !== undefined || seen.has(range.pos)) continue;
+      seen.add(range.pos);
+      if (IGNORE_RE.test(commentText(text.slice(range.pos, range.end)))) found = range.pos;
+    }
+  };
+  const visit = (node: ts.Node): void => {
+    if (found !== undefined) return;
+    check(ts.getLeadingCommentRanges(text, node.getFullStart()));
+    check(ts.getTrailingCommentRanges(text, node.getEnd()));
+    // `{/* ... */}` in JSX: the comment is the expression's only content.
+    if (ts.isJsxExpression(node) && !node.expression)
+      check(ts.getLeadingCommentRanges(text, node.getStart(sf) + 1));
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  check(ts.getLeadingCommentRanges(text, sf.endOfFileToken.getFullStart()));
+  return found;
 }

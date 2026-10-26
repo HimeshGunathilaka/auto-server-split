@@ -5,3 +5,4 @@ e2e/apps
 dist
 pnpm-lock.yaml
 docs/benchmarks.md
+.claude

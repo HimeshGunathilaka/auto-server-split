@@ -1,8 +1,8 @@
 import type { Skip } from "./analysis/skip.js";
-import type { Warning } from "./analysis/timezone.js";
+import type { Warning } from "./analysis/warnings.js";
 
 export type { Skip, SkipCode, SourceLocation } from "./analysis/skip.js";
-export type { Warning, WarningCode } from "./analysis/timezone.js";
+export type { Warning, WarningCode } from "./analysis/warnings.js";
 
 export type IslandInfo = {
   name: string;
@@ -41,6 +41,11 @@ export type FileResult = {
    * now renders in the server's timezone. Only on changes.
    */
   warnings?: Warning[];
+  /**
+   * Changes to other files this one needs, project-relative: a later pass found it once they made
+   * its importers Server Components (see `iterate`). Apply them in the same run.
+   */
+  requires?: string[];
   /** Unified diff covering all touched/created files. */
   diff: string;
   /** Project-relative path -> new content, for every touched or created file. */
