@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { githubAnnotations, markdownReport } from "../src/report.js";
+import { compareReports } from "../src/report/compare.js";
+import { githubAnnotations } from "../src/report/github.js";
+import { findings } from "../src/report/sarif.js";
+import { markdownReport } from "../src/report/markdown.js";
 import type { FileResult } from "../src/types.js";
 
 const base = (file: string, extra: Partial<FileResult>): FileResult => ({
@@ -112,5 +115,53 @@ describe("apply commands in annotations", () => {
     expect(book).toContain(
       "Apply with: npx auto-server-split 'components/Shelf Host.tsx' components/Book.tsx --remove-unused-directives --write",
     );
+  });
+});
+
+describe("compareReports", () => {
+  const skipped = (file: string, code: "fully-interactive" | "context-provider"): FileResult =>
+    base(file, { status: "skipped", islands: [], skipped: { code, message: code } });
+
+  it("treats a change as moved only when the earlier file is gone, once per earlier change", () => {
+    const card = base("components/Card.tsx", { fingerprint: "fp" });
+    const before = { files: [card] };
+    // A second Card with the same fingerprint, while the first is still there: new.
+    const added = compareReports(before, { files: [card, { ...card, file: "shop/Card.tsx" }] });
+    expect(added.added.map((a) => a.file)).toEqual(["shop/Card.tsx"]);
+    // The first one moved: not new, and not resolved.
+    const moved = compareReports(before, { files: [{ ...card, file: "ui/Card.tsx" }] });
+    expect(moved.added).toEqual([]);
+    expect(moved.resolved).toEqual([]);
+    // Moved and copied: one of the two is new.
+    const both = compareReports(before, {
+      files: [
+        { ...card, file: "a/Card.tsx" },
+        { ...card, file: "b/Card.tsx" },
+      ],
+    });
+    expect(both.added).toHaveLength(1);
+    expect(both.resolved).toEqual([]);
+  });
+
+  it("lists a skip whose reason changed once", () => {
+    const c = compareReports(
+      { files: [skipped("Banner.tsx", "fully-interactive")] },
+      { files: [skipped("Banner.tsx", "context-provider")] },
+    );
+    expect(c.newSkips).toEqual([]);
+    expect(c.goneSkips).toEqual([]);
+    expect(c.changedSkips).toEqual([
+      { file: "Banner.tsx", before: "fully-interactive", after: "context-provider" },
+    ]);
+  });
+});
+
+describe("findings", () => {
+  it("gives identical copies of a component distinct fingerprints", () => {
+    const copy = (file: string) => base(file, { fingerprint: "same" });
+    const prints = findings([copy("a/Card.tsx"), copy("b/Card.tsx")]).map((f) => f.fingerprint);
+    expect(new Set(prints).size).toBe(2);
+    // The first keeps the plain fingerprint, so existing alerts still match.
+    expect(prints[0]).toBe(findings([copy("a/Card.tsx")])[0]?.fingerprint);
   });
 });

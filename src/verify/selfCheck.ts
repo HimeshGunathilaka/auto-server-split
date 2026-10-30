@@ -4,6 +4,7 @@ import { getModuleDirective } from "../analysis/directives.js";
 import type { FrameworkAdapter } from "../analysis/framework.js";
 import { buildImportTable } from "../analysis/importTable.js";
 import type { ModuleSafety } from "../analysis/moduleSafety.js";
+import type { SafetyRules } from "../analysis/rules.js";
 import { isIntrinsicTagName, stripParens } from "../analysis/refs.js";
 import { checkSerializable, isCallableType } from "../analysis/serializable.js";
 import type { Outcome } from "../analysis/skip.js";
@@ -21,6 +22,7 @@ type SelfCheckInput = {
   classifier: PackageClassifier;
   moduleSafety: ModuleSafety;
   serverSafeHooks: ReadonlySet<string>;
+  rules?: SafetyRules;
   file: string;
   serverText: string;
   /** The generated island file; undefined when only the `"use client"` directive is removed. */
@@ -130,6 +132,7 @@ export function selfCheck(input: SelfCheckInput): Outcome<void> {
       input.framework,
       input.moduleSafety.check,
       input.serverSafeHooks,
+      input.rules,
     );
     const islandSymbols = new Set(
       imports.bindings.filter((b) => b.specifier === island?.specifier).map((b) => b.symbol),

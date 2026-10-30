@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { summaryLines } from "../src/summary.js";
+import { acceptedRoutes, summaryLines } from "../src/summary.js";
 import type { FileResult } from "../src/types.js";
 
 const result = (file: string, conservative: number): FileResult => ({
@@ -54,5 +54,36 @@ describe("CLI summary", () => {
     expect(text).toContain("files split:    1 (1 written)");
     expect(text).toContain("directives removed: 1 (1 written)");
     expect(text).toContain("estimated saving: 150 B gzip");
+  });
+});
+
+describe("acceptedRoutes", () => {
+  it("leaves out the changes declined in --interactive", () => {
+    const on = (file: string, bytesSaved: number): FileResult => ({
+      ...result(file, bytesSaved),
+      routes: [{ route: "/", load: "initial", bytesSaved }],
+    });
+    const routes = [
+      {
+        route: "/",
+        files: ["A.tsx", "B.tsx"],
+        initialSaved: 900,
+        lazySaved: 0,
+        source: "esbuild" as const,
+      },
+      {
+        route: "/b",
+        files: ["B.tsx"],
+        initialSaved: 500,
+        lazySaved: 0,
+        source: "esbuild" as const,
+      },
+    ];
+    // Only A accepted: /b goes, / counts A's saving alone.
+    expect(acceptedRoutes(routes, [on("A.tsx", 400)])).toEqual([
+      { route: "/", files: ["A.tsx"], initialSaved: 400, lazySaved: 0, source: "esbuild" },
+    ]);
+    // Both accepted: the totals stay as computed.
+    expect(acceptedRoutes(routes, [on("A.tsx", 400), on("B.tsx", 600)])).toEqual(routes);
   });
 });

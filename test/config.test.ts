@@ -147,6 +147,31 @@ describe("split() config option", () => {
     await expect(call({ minBytesSaved: -1 })).rejects.toThrow(
       '"minBytesSaved" must be a non-negative number',
     );
-    await expect(call({ minBytesSaved: 0 })).resolves.toEqual({ files: [] });
+    await expect(call({ minBytesSaved: 0 })).resolves.toMatchObject({ files: [] });
+    await expect(call({ check: { maxNewBoundaries: 0.5 } })).rejects.toThrow(
+      "maxNewBoundaries must be a whole number",
+    );
+    await expect(call({ rules: { serverSafeExports: ["#Icon"] } })).rejects.toThrow(
+      'invalid entry "#Icon"',
+    );
+  });
+});
+
+describe("split() options", () => {
+  it("rejects options it can't use instead of guessing", async () => {
+    const root = project({ "Comp.tsx": "export const x = 1;\n" });
+    const call = (options: Record<string, unknown>) =>
+      split({ root, noConfigFile: true, measure: false, ...options });
+    // A string would be read character by character, "/" included.
+    await expect(call({ paths: "Comp.tsx" })).rejects.toThrow(ConfigError);
+    await expect(call({ paths: "Comp.tsx" })).rejects.toThrow("paths must be an array of strings");
+    await expect(call({ paths: ["../.."] })).rejects.toThrow("paths: ../.. is outside the root");
+    await expect(call({ bogus: true })).rejects.toThrow('unknown option "bogus"');
+    await expect(call({ routes: "no" })).rejects.toThrow("routes must be a boolean");
+    await expect(call({ root: path.join(root, "nope") })).rejects.toThrow("does not exist");
+    await expect(call({ noConfigFile: false, configFile: "missing.config.ts" })).rejects.toThrow(
+      "the config file missing.config.ts does not exist",
+    );
+    await expect(call({ paths: ["Comp.tsx"] })).resolves.toMatchObject({ files: [] });
   });
 });

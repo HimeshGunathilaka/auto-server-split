@@ -1,12 +1,12 @@
 import MagicString from "magic-string";
 import { ts } from "ts-morph";
-import type { FileShape, ModuleDecl } from "../analysis/components.js";
+import type { FileShape, ModuleDecl, TextEdit } from "../analysis/components.js";
 import type { AnalysisContext } from "../analysis/context.js";
 import { locOf } from "../analysis/context.js";
 import { getModuleDirective } from "../analysis/directives.js";
 import type { ImportBinding, ImportTable } from "../analysis/importTable.js";
-import type { ComponentPlan, IslandPlan, Unit } from "../analysis/islands.js";
-import { islandBaseName } from "../analysis/islands.js";
+import type { ComponentPlan, IslandPlan } from "../analysis/islands.js";
+import { islandBaseName, unitNodes } from "../analysis/islands.js";
 import {
   containsRange,
   forEachIdentifier,
@@ -165,8 +165,8 @@ export function emitSplit(input: EmitInput): Outcome<EmitOutput> {
 
   // ---- island file -----------------------------------------------------------------------------
   const islandContent: ts.Node[] = islands.flatMap((i) => [
-    i.root.node,
-    ...i.units.map((u) => u.node),
+    ...(i.effects ? [] : [i.root.node]),
+    ...i.units.flatMap(unitNodes),
   ]);
   const collector = new TypeRefCollector(sf, checker, imports, shape.moduleDecls, islandContent);
   const valueImports = new Set<ImportBinding>();
@@ -381,20 +381,30 @@ export function emitSplit(input: EmitInput): Outcome<EmitOutput> {
     removed.push({ start: directive.getStart(sf), end });
   }
 
+  // memo()/forwardRef() come off the components that stay in this file (see transparentWrapper).
+  const movedSet = new Set(movedComponents.map((decl) => decl.component));
+  const unwraps = shape.components.filter((c) => !movedSet.has(c)).flatMap((c) => c.unwrap);
+  for (const edit of unwraps)
+    if (edit.text === "") removed.push({ start: edit.start, end: edit.end });
+
   // Body statements that leave the server component.
   const unitRanges: Range[] = [];
   for (const plan of plans) {
-    for (const unit of plan.removedUnits) unitRanges.push(statementLineRange(sf, unit.node));
+    for (const unit of plan.removedUnits)
+      for (const node of unitNodes(unit)) unitRanges.push(statementLineRange(sf, node));
   }
   for (const r of mergeRanges(unitRanges)) removed.push(collapseBlankLines(text, r));
 
   // Module declarations that move entirely (client-only helpers) or are no longer used on the server.
-  const replacedRoots: Range[] = islands.map((i) => ({
-    start: i.root.node.getStart(sf),
-    end: i.root.node.getEnd(),
-  }));
-  // Slots are re-emitted in the server file, so references inside them still count there.
-  const keptInside: Range[] = slotNodes.map((n) => ({ start: n.getStart(sf), end: n.getEnd() }));
+  const replacedRoots: Range[] = islands
+    .filter((i) => !i.effects)
+    .map((i) => ({ start: i.root.node.getStart(sf), end: i.root.node.getEnd() }));
+  // Slots are re-emitted in the server file, so references inside them still count there, and so
+  // do types an unwrapped forwardRef<T, P>() moves onto its component's parameter.
+  const keptInside: Range[] = [
+    ...slotNodes.map((n) => ({ start: n.getStart(sf), end: n.getEnd() })),
+    ...unwraps.flatMap((edit) => (edit.keep ? [edit.keep] : [])),
+  ];
   const moduleRemovals = new Set<ModuleDecl>();
   for (const plan of plans) plan.movedModuleDecls.forEach((d) => moduleRemovals.add(d));
   // Wholesale components leave the server file and are imported back from the island file.
@@ -428,53 +438,22 @@ export function emitSplit(input: EmitInput): Outcome<EmitOutput> {
   }
 
   // Imports: keep only what the server part still references.
-  const allRemoved = [...removed, ...replacedRoots];
   const keyRanges: Range[] = islands.flatMap((i) =>
     i.keyAttr ? [{ start: i.keyAttr.getStart(sf), end: i.keyAttr.getEnd() }] : [],
   );
-  const remainingUse = new Map<ImportBinding, { value: boolean; type: boolean }>();
-  forEachIdentifier(sf, (id) => {
-    const pos = id.getStart(sf);
-    if (inAny(allRemoved, pos) && !inAny(keyRanges, pos) && !inAny(keptInside, pos)) return;
-    const symbol = symbolOfRef(checker, id);
-    const binding = symbol ? imports.bySymbol.get(symbol) : undefined;
-    if (!binding) return;
-    if (containsRange(binding.declaration, id)) return;
-    const use = remainingUse.get(binding) ?? { value: false, type: false };
-    if (isInTypePosition(id)) use.type = true;
-    else use.value = true;
-    remainingUse.set(binding, use);
-  });
-
-  let lastKeptImport: ts.ImportDeclaration | undefined;
-  for (const decl of imports.declarations) {
-    const all = imports.bindings.filter((b) => b.declaration === decl);
-    if (!decl.importClause) {
-      lastKeptImport = decl; // side-effect imports (CSS) stay with the server component
-      continue;
-    }
-    const kept = all.filter((b) => remainingUse.has(b));
-    const range = statementLineRange(sf, decl);
-    if (kept.length === 0) {
-      removed.push(range);
-      ms.remove(range.start, range.end);
-      continue;
-    }
-    lastKeptImport = decl;
-    const valueUsed = kept.some((b) => remainingUse.get(b)?.value && !b.typeOnly);
-    const moduleIsNeutral = kept.every((b) => isNeutralModule(b));
-    const needsTypeOnly = !valueUsed && !decl.importClause.isTypeOnly && !moduleIsNeutral;
-    if (kept.length === all.length && !needsTypeOnly) continue;
-    const entries = kept.map((b) => ({ binding: b, typeOnly: b.typeOnly || needsTypeOnly }));
-    const spec = (decl.moduleSpecifier as ts.StringLiteral).getText(sf);
-    ms.overwrite(
-      decl.getStart(sf),
-      decl.getEnd(),
-      importStatement(decl, sf, entries, style, spec).join("\n"),
-    );
-  }
+  const pruned = pruneImports(
+    ms,
+    ctx,
+    imports,
+    style,
+    [...removed, ...replacedRoots],
+    [...keyRanges, ...keptInside],
+  );
+  removed.push(...pruned.removedLines);
+  const lastKeptImport = pruned.lastKept;
 
   if (directive) ms.remove(directive.getStart(sf), removed[0]?.end ?? directive.getEnd());
+  applyEdits(ms, unwraps);
   for (const r of mergeRanges(unitRanges)) {
     const collapsed = collapseBlankLines(text, r);
     ms.remove(collapsed.start, collapsed.end);
@@ -489,6 +468,11 @@ export function emitSplit(input: EmitInput): Outcome<EmitOutput> {
     if (island.keyAttr) attrs.push(island.keyAttr.getText(sf));
     for (const prop of island.props)
       attrs.push(`${prop.name}={${prop.picked ? prop.picked.serverExpr : prop.name}}`);
+    if (island.effects) {
+      const usage = `<${island.name}${attrs.map((a) => ` ${a}`).join("")} />`;
+      insertEffectsIsland(ms, sf, island.root.node, usage, style);
+      continue;
+    }
     const rootStart = island.root.node.getStart(sf);
     const slotIndent = indentationOfLine(text, rootStart) + style.indent;
     const slotSource = (node: ts.Node) => {
@@ -535,6 +519,139 @@ export function emitSplit(input: EmitInput): Outcome<EmitOutput> {
   }
 
   return ok({ serverText: ms.toString(), islandText, islands });
+}
+
+/** Applies text edits to the original file's text (removals, replacements and insertions). */
+function applyEdits(ms: MagicString, edits: readonly TextEdit[]): void {
+  for (const edit of edits) {
+    if (edit.start === edit.end) ms.appendLeft(edit.start, edit.text);
+    else if (edit.text === "") ms.remove(edit.start, edit.end);
+    else ms.overwrite(edit.start, edit.end, edit.text);
+  }
+}
+
+/**
+ * Drops the import bindings that nothing outside `removed` references any more (references inside
+ * `kept` still count), and rewrites declarations that keep only some of theirs. `prunable` limits
+ * which bindings may go. Returns the last import declaration that stays and the lines removed.
+ */
+function pruneImports(
+  ms: MagicString,
+  ctx: AnalysisContext,
+  imports: ImportTable,
+  style: CodeStyle,
+  removed: Range[],
+  kept: Range[],
+  prunable: (binding: ImportBinding) => boolean = () => true,
+): { lastKept: ts.ImportDeclaration | undefined; removedLines: Range[] } {
+  const { sf, checker } = ctx;
+  const remainingUse = new Map<ImportBinding, { value: boolean; type: boolean }>();
+  forEachIdentifier(sf, (id) => {
+    const pos = id.getStart(sf);
+    if (inAny(removed, pos) && !inAny(kept, pos)) return;
+    const symbol = symbolOfRef(checker, id);
+    const binding = symbol ? imports.bySymbol.get(symbol) : undefined;
+    if (!binding) return;
+    if (containsRange(binding.declaration, id)) return;
+    const use = remainingUse.get(binding) ?? { value: false, type: false };
+    if (isInTypePosition(id)) use.type = true;
+    else use.value = true;
+    remainingUse.set(binding, use);
+  });
+
+  let lastKept: ts.ImportDeclaration | undefined;
+  const removedLines: Range[] = [];
+  for (const decl of imports.declarations) {
+    const all = imports.bindings.filter((b) => b.declaration === decl);
+    if (!decl.importClause) {
+      lastKept = decl; // side-effect imports (CSS) stay with the server component
+      continue;
+    }
+    const kept = all.filter((b) => remainingUse.has(b) || !prunable(b));
+    const range = statementLineRange(sf, decl);
+    if (kept.length === 0) {
+      removedLines.push(range);
+      ms.remove(range.start, range.end);
+      continue;
+    }
+    lastKept = decl;
+    const valueUsed = kept.some((b) => (remainingUse.get(b)?.value || !prunable(b)) && !b.typeOnly);
+    const moduleIsNeutral = kept.every((b) => isNeutralModule(b));
+    const needsTypeOnly = !valueUsed && !decl.importClause.isTypeOnly && !moduleIsNeutral;
+    if (kept.length === all.length && !needsTypeOnly) continue;
+    const entries = kept.map((b) => ({ binding: b, typeOnly: b.typeOnly || needsTypeOnly }));
+    const spec = (decl.moduleSpecifier as ts.StringLiteral).getText(sf);
+    ms.overwrite(
+      decl.getStart(sf),
+      decl.getEnd(),
+      importStatement(decl, sf, entries, style, spec).join("\n"),
+    );
+  }
+  return { lastKept, removedLines };
+}
+
+/**
+ * Adds an effects island's element as the last child of `host` (the element or fragment the
+ * component returns): on a line of its own before the closing tag, indented like a child, or
+ * right before the closing tag when the element is on one line.
+ */
+function insertEffectsIsland(
+  ms: MagicString,
+  sf: ts.SourceFile,
+  host: ts.Node,
+  usage: string,
+  style: CodeStyle,
+): void {
+  const text = sf.text;
+  const closing = ts.isJsxElement(host)
+    ? host.closingElement
+    : ts.isJsxFragment(host)
+      ? host.closingFragment
+      : undefined;
+  if (!closing) return;
+  const at = closing.getStart(sf);
+  const lineStart = lineStartOf(text, at);
+  if (text.slice(lineStart, at).trim() === "") {
+    const indent = indentationOfLine(text, at) + style.indent;
+    ms.prependRight(lineStart, `${indent}${usage}\n`);
+  } else {
+    ms.prependRight(at, usage);
+  }
+}
+
+/**
+ * The file without its `"use client"` directive (`removeUnusedDirectives`). `memo()`/`forwardRef()`
+ * come off its components too, and the imports only they used.
+ */
+export function emitDirectiveRemoval(
+  ctx: AnalysisContext,
+  shape: FileShape,
+  imports: ImportTable,
+): string {
+  const { sf } = ctx;
+  const text = sf.text;
+  const ms = new MagicString(text);
+  const directive = getModuleDirective(sf).statement;
+  if (directive) {
+    let end = directive.getEnd();
+    while (end < text.length && /\s/.test(text[end] ?? "")) end++;
+    ms.remove(directive.getStart(sf), end);
+  }
+  const unwraps = shape.components.flatMap((c) => c.unwrap);
+  if (unwraps.length === 0) return ms.toString();
+  const removed = unwraps.filter((e) => e.text === "").map((e) => ({ start: e.start, end: e.end }));
+  const kept = unwraps.flatMap((e) => (e.keep ? [e.keep] : []));
+  // Only bindings the removed wrappers used may go: the rest of the file stays byte for byte.
+  const wrapperBindings = new Set<ImportBinding>();
+  forEachIdentifier(sf, (id) => {
+    if (!inAny(removed, id.getStart(sf))) return;
+    const symbol = symbolOfRef(ctx.checker, id);
+    const binding = symbol ? imports.bySymbol.get(symbol) : undefined;
+    if (binding) wrapperBindings.add(binding);
+  });
+  pruneImports(ms, ctx, imports, detectStyle(sf), removed, kept, (b) => wrapperBindings.has(b));
+  applyEdits(ms, unwraps);
+  return ms.toString();
 }
 
 function statementSource(statement: ts.Statement, sf: ts.SourceFile): string {
@@ -658,14 +775,20 @@ function renderIsland(
     const gap = /^[^\S\n]*(?:\/\/[^\n]*)?\n([^\S\n]*\n)/.exec(rest);
     return gap !== null;
   };
-  island.units.forEach((unit, i) => {
-    lines.push(renderUnit(unit, sf, ind));
-    const next = island.units[i + 1];
+  // A unit can be several statements (a `let` and the assignments after it).
+  const statements = island.units.flatMap(unitNodes);
+  statements.forEach((node, i) => {
+    lines.push(renderStatement(node, sf, ind));
+    const next = statements[i + 1];
     const separated = next
-      ? /\n[^\S\n]*\n/.test(text.slice(unit.node.getEnd(), statementLineRange(sf, next.node).start))
-      : blankAfter(unit.node);
+      ? /\n[^\S\n]*\n/.test(text.slice(node.getEnd(), statementLineRange(sf, next).start))
+      : blankAfter(node);
     if (separated) lines.push("");
   });
+  if (island.effects) {
+    lines.push(`${ind}return null${semi}`, "}");
+    return lines.join("\n");
+  }
 
   const root = island.root.node;
   const rootStart = root.getStart(sf);
@@ -697,22 +820,13 @@ function renderIsland(
   return lines.join("\n");
 }
 
-/** The file's text without its directive (`"use client"`) and the whitespace that follows it. */
-export function withoutDirective(sf: ts.SourceFile): string {
-  const directive = getModuleDirective(sf).statement;
-  if (!directive) return sf.text;
-  let end = directive.getEnd();
-  while (end < sf.text.length && /\s/.test(sf.text[end] ?? "")) end++;
-  return sf.text.slice(0, directive.getStart(sf)) + sf.text.slice(end);
-}
-
-function renderUnit(unit: Unit, sf: ts.SourceFile, ind: string): string {
+function renderStatement(node: ts.Statement, sf: ts.SourceFile, ind: string): string {
   const text = sf.text;
-  const range = statementLineRange(sf, unit.node);
-  const start = range.whole ? range.start : unit.node.getStart(sf);
-  let chunk = text.slice(start, unit.node.getEnd());
-  const lineIndent = indentationOfLine(text, unit.node.getStart(sf));
+  const range = statementLineRange(sf, node);
+  const start = range.whole ? range.start : node.getStart(sf);
+  let chunk = text.slice(start, node.getEnd());
+  const lineIndent = indentationOfLine(text, node.getStart(sf));
   chunk = chunk.replace(/^[ \t]*/, "");
-  if (!hasMultilineLiteral(unit.node, sf)) chunk = reindent(chunk, lineIndent, ind);
+  if (!hasMultilineLiteral(node, sf)) chunk = reindent(chunk, lineIndent, ind);
   return `${ind}${chunk}`;
 }

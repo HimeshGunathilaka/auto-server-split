@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { Rule } from "eslint";
-import { shellQuote } from "../../report.js";
+import { shellQuote } from "../../report/markdown.js";
 import { analyzeForLint } from "../engine.js";
 
 type Options = [{ minStaticRatio?: number; selfCheck?: boolean; measure?: boolean }?];
@@ -90,7 +90,9 @@ export const preferServerSplit: Rule.RuleModule = {
           });
           return;
         }
-        const tags = [...new Set(islands.map((i) => `<${i.rootTag}>`))].join(", ");
+        const tags = [
+          ...new Set(islands.map((i) => (i.effects ? "effects only" : `<${i.rootTag}>`))),
+        ].join(", ");
         context.report({
           node: directive,
           messageId: "preferSplit",

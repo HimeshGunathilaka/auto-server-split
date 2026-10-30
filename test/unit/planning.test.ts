@@ -237,7 +237,7 @@ export default function Comp({ items }: { items: string[] }) {
     expect(f.islands.map((i) => i.rootTag)).toEqual(["ul"]);
   });
 
-  it("still refuse an effect that uses no island's state", async () => {
+  it("give an effect that uses no island's state an island that renders nothing", async () => {
     const f = await splitOne(`"use client";
 import { useEffect, useState } from "react";
 export default function Comp({ page }: { page: string }) {
@@ -253,7 +253,72 @@ export default function Comp({ page }: { page: string }) {
   );
 }
 `);
-    expect(f.skipped?.code).toBe("unsupported-pattern");
+    // Listed by the line their code comes from: the effect's, then the button's.
+    expect(f.islands.map((i) => [i.name, i.rootTag, i.effects ?? false])).toEqual([
+      ["CompEffects", "effects", true],
+      ["CompButton", "button", false],
+    ]);
+    expect(f.outputs["Comp.tsx"]).toContain(`      <CompButton />
+      <CompEffects page={page} />
+    </div>`);
+    expect(f.outputs["Comp.client.tsx"])
+      .toContain(`export function CompEffects({ page }: { page: string }) {
+  useEffect(() => {
+    document.title = page;
+  }, [page]);
+  return null;
+}`);
+  });
+
+  it("add an effects island to a returned fragment, also on one line", async () => {
+    const f = await splitOne(`"use client";
+import { useEffect } from "react";
+export default function Comp({ page }: { page: string }) {
+  useEffect(() => {
+    document.title = page;
+  }, [page]);
+  return <><h1>{page}</h1></>;
+}
+`);
+    expect(f.status).toBe("split");
+    expect(f.outputs["Comp.tsx"]).toContain(
+      "return <><h1>{page}</h1><CompEffects page={page} /></>;",
+    );
+  });
+
+  it("keep an effect without an island when there's no single element to add one to", async () => {
+    const twoReturns = await splitOne(`"use client";
+import { useEffect } from "react";
+export default function Comp({ page }: { page?: string }) {
+  useEffect(() => { document.title = page ?? ""; }, [page]);
+  if (!page) return null;
+  return <main><h1>{page}</h1></main>;
+}
+`);
+    expect(twoReturns.skipped?.message).toBe(
+      "client-only code at line 4 isn't connected to any rendered element, and the component has more than one return; moving it would change when it runs",
+    );
+    const componentRoot = await splitOne(`"use client";
+import { useEffect, type ReactNode } from "react";
+function Shell({ children }: { children: ReactNode }) { return <main>{children}</main>; }
+export default function Comp({ page }: { page: string }) {
+  useEffect(() => { document.title = page; }, [page]);
+  return <Shell><h1>{page}</h1></Shell>;
+}
+`);
+    expect(componentRoot.skipped?.message).toContain(
+      "and the returned element is the component <Shell>, whose children would change",
+    );
+    const voidRoot = await splitOne(`"use client";
+import { useEffect } from "react";
+export default function Comp({ src }: { src: string }) {
+  useEffect(() => { console.log(src); }, [src]);
+  return <img src={src} alt="" />;
+}
+`);
+    expect(voidRoot.skipped?.message).toContain(
+      "and the returned <img /> has no children to add to",
+    );
   });
 });
 
@@ -635,41 +700,198 @@ export default function Comp({ title }: { title: string }) {
 }
 `,
       {
-        "utils.ts": `export function cn(...c: string[]) { return c.join(" "); }
-export function uid() { return Math.random().toString(36); }
+        "utils.ts": `export function cn(...c: string[]) { return [...c, uid()].join(" "); }
+function uid() { return Math.random().toString(36); }
 `,
       },
     );
     expect(f.skipped?.code).toBe("state-spans-component");
     expect(f.skipped?.message).toContain("<div>, <h2>: cn from ./utils is client-only");
-    expect(f.skipped?.message).toContain("utils.ts:2");
+    expect(f.skipped?.message).toContain("utils.ts:2 uses Math.random()");
   });
 
   it("describe an unconnected effect the same way whether or not there are islands", async () => {
     const effectOnly = await splitOne(`"use client";
 import { useEffect } from "react";
 import { usePathname } from "next/navigation";
-export default function Comp({ children }: { children: React.ReactNode }) {
+export default function Comp({ children }: { children?: React.ReactNode }) {
   const pathname = usePathname();
   useEffect(() => { window.scrollTo(0, 0); }, [pathname]);
+  if (!children) return null;
   return <main><h1>Site</h1>{children}</main>;
 }
 `);
     const withIsland = await splitOne(`"use client";
 import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
-export default function Comp({ children }: { children: React.ReactNode }) {
+export default function Comp({ children }: { children?: React.ReactNode }) {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
   useEffect(() => { window.scrollTo(0, 0); }, [pathname]);
+  if (!children) return null;
   return <main><h1>Site</h1><button onClick={() => setOpen(!open)}>menu</button>{children}</main>;
 }
 `);
     for (const f of [effectOnly, withIsland]) {
       expect(f.skipped?.code).toBe("unsupported-pattern");
       expect(f.skipped?.message).toMatch(
-        /^client-only code at line 5 isn't connected to any rendered element; moving it would change when it runs$/,
+        /^client-only code at line 5 isn't connected to any rendered element, and the component has more than one return; moving it would change when it runs$/,
       );
+    }
+  });
+});
+
+describe("let with assignments right after it", () => {
+  it("moves a let computed from state into the island, and keeps one computed from props", async () => {
+    const f = await splitOne(`"use client";
+import { useState } from "react";
+
+export default function Comp({ title, featured }: { title: string; featured: boolean }) {
+  const [on, setOn] = useState(false);
+  let label = "Off";
+  if (on) label = "On";
+
+  let cls = "card";
+  if (featured) {
+    cls += " featured";
+  } else if (title.length > 10) {
+    cls += " long";
+  }
+  return (
+    <section className={cls}>
+      <h2>{title}</h2>
+      <button onClick={() => setOn(!on)}>{label}</button>
+    </section>
+  );
+}
+`);
+    expect(f.status).toBe("split");
+    expect(f.islands.map((i) => [i.rootTag, i.props])).toEqual([["button", []]]);
+    expect(f.outputs["Comp.client.tsx"]).toContain(`export function CompButton() {
+  const [on, setOn] = useState(false);
+  let label = "Off";
+  if (on) label = "On";
+
+  return <button onClick={() => setOn(!on)}>{label}</button>;
+}`);
+    const server = f.outputs["Comp.tsx"] ?? "";
+    expect(server).not.toContain("let label");
+    expect(server).toContain(`  let cls = "card";
+  if (featured) {
+    cls += " featured";
+  } else if (title.length > 10) {
+    cls += " long";
+  }`);
+  });
+
+  it("passes a let computed on the server to an island as a prop", async () => {
+    const f = await splitOne(`"use client";
+import { useState } from "react";
+
+export default function Comp({ count }: { count: number }) {
+  const [open, setOpen] = useState(false);
+  let noun = "items";
+  if (count === 1) noun = "item";
+  return (
+    <div>
+      <h2>Basket</h2>
+      <button onClick={() => setOpen(!open)}>
+        {count} {noun}
+      </button>
+    </div>
+  );
+}
+`);
+    expect(f.status).toBe("split");
+    expect(f.islands[0]?.props).toEqual(["count", "noun"]);
+  });
+
+  it("refuses a let that's assigned later, and hooks while computing it", async () => {
+    const later = await splitOne(`"use client";
+import { useState } from "react";
+export default function Comp() {
+  const [n, setN] = useState(0);
+  let total = 0;
+  const bump = () => { total = n + 1; setN(total); };
+  return <div><h2>Title</h2><button onClick={bump}>{n}</button></div>;
+}
+`);
+    expect(later.skipped).toMatchObject({ code: "unsupported-pattern" });
+    expect(later.skipped?.message).toContain(
+      "`total` is assigned at line 6; a `let` is supported when it's only assigned right after its declaration",
+    );
+    const hook = await splitOne(`"use client";
+import { useState, useId } from "react";
+export default function Comp({ id }: { id?: string }) {
+  const [n, setN] = useState(0);
+  let key = id;
+  if (!key) key = useId();
+  return <div><h2>{key}</h2><button onClick={() => setN(n + 1)}>{n}</button></div>;
+}
+`);
+    expect(hook.skipped).toMatchObject({ code: "conditional-hooks-or-returns" });
+    const v = await splitOne(`"use client";
+import { useState } from "react";
+export default function Comp() {
+  const [n, setN] = useState(0);
+  var x = 1;
+  return <div><h2>{x}</h2><button onClick={() => setN(n + 1)}>{n}</button></div>;
+}
+`);
+    expect(v.skipped?.message).toBe("declares a `var` in the component body");
+  });
+});
+
+describe("effects islands keep effect order", () => {
+  it("refuses when an island's effect is declared after the effect that would move", async () => {
+    const before = await splitOne(`"use client";
+import { useEffect, useState } from "react";
+export default function Comp({ title }: { title: string }) {
+  useEffect(() => { document.title = title; }, [title]);
+  const [open, setOpen] = useState(false);
+  useEffect(() => { document.title = open ? "open" : "closed"; }, [open]);
+  return (
+    <main>
+      <h1>{title}</h1>
+      <button onClick={() => setOpen(!open)}>{String(open)}</button>
+    </main>
+  );
+}
+`);
+    expect(before.skipped?.message).toBe(
+      "client-only code at line 4 isn't connected to any rendered element, and useEffect() at line 6 (in the island <button> (line 10)) is declared after it, so its effects would run first; moving it would change when it runs",
+    );
+    const after = await splitOne(`"use client";
+import { useEffect, useState } from "react";
+export default function Comp({ title }: { title: string }) {
+  const [open, setOpen] = useState(false);
+  useEffect(() => { document.title = open ? "open" : "closed"; }, [open]);
+  useEffect(() => { document.title = title; }, [title]);
+  return (
+    <main>
+      <h1>{title}</h1>
+      <button onClick={() => setOpen(!open)}>{String(open)}</button>
+    </main>
+  );
+}
+`);
+    expect(after.islands.map((i) => i.name)).toEqual(["CompEffects", "CompButton"]);
+  });
+});
+
+describe("let writes", () => {
+  it("refuses a let written by destructuring or a for-of loop", async () => {
+    for (const write of ['[label] = ["On"];', 'for (label of ["a"]) {}']) {
+      const f = await splitOne(`"use client";
+import { useState } from "react";
+export default function Comp() {
+  const [n, setN] = useState(0);
+  let label = "Off";
+  const update = () => { ${write} };
+  return <div><h2>{label}</h2><button onClick={() => { update(); setN(n + 1); }}>{n}</button></div>;
+}
+`);
+      expect(f.skipped?.message, write).toContain("`label` is assigned at line 6");
     }
   });
 });

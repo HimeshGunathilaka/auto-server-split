@@ -1,8 +1,12 @@
-import type { Skip } from "./analysis/skip.js";
-import type { Warning } from "./analysis/warnings.js";
+import type { RulesConfig } from "./analysis/rules.js";
+import type { Skip, SkipCode } from "./analysis/skip.js";
+import type { Warning, WarningCode } from "./analysis/warnings.js";
+import type { FileRoute, RouteSaving } from "./measure/routes.js";
 
 export type { Skip, SkipCode, SourceLocation } from "./analysis/skip.js";
 export type { Warning, WarningCode } from "./analysis/warnings.js";
+export type { RulesConfig } from "./analysis/rules.js";
+export type { FileRoute, RouteLoad, RouteSaving } from "./measure/routes.js";
 
 export type IslandInfo = {
   name: string;
@@ -11,6 +15,11 @@ export type IslandInfo = {
   line: number;
   /** True for a whole helper component moved into the island file (not a generated island). */
   moved?: boolean;
+  /**
+   * True for an island that renders nothing and only runs effects no element uses; it's rendered
+   * as the last child of the component's returned element. Its `rootTag` is `"effects"`.
+   */
+  effects?: boolean;
 };
 
 export type FileResult = {
@@ -20,6 +29,12 @@ export type FileResult = {
    * is removed (with `removeUnusedDirectives`). Its `islands` is empty and `outputs` holds the file.
    */
   status: "split" | "directive-removed" | "skipped" | "unchanged";
+  /**
+   * On changes: identifies the change across runs without its path or line numbers (the kind of
+   * change, the component and its islands' names). Baselines, SARIF and GitLab reports use it, so a
+   * moved file or shifted code isn't reported as new.
+   */
+  fingerprint?: string;
   skipped?: Skip;
   islands: IslandInfo[];
   /** Share of JSX nodes that end up outside islands, 0..1. */
@@ -46,6 +61,12 @@ export type FileResult = {
    * its importers Server Components (see `iterate`). Apply them in the same run.
    */
   requires?: string[];
+  /**
+   * The App Router routes that load this file and what the change saves on each (`bytesSaved`
+   * when measuring): `"initial"` routes load it with the page, `"lazy"` ones later (`next/dynamic`,
+   * `import()`). Like `bytesSaved`, it assumes the other proposed changes are applied too.
+   */
+  routes?: FileRoute[];
   /** Unified diff covering all touched/created files. */
   diff: string;
   /** Project-relative path -> new content, for every touched or created file. */
@@ -54,6 +75,35 @@ export type FileResult = {
 
 export type SplitResult = {
   files: FileResult[];
+  /** Per App Router route: the changes on it and what they save together. */
+  routes?: RouteSaving[];
+  /** The run's numbers. */
+  summary: RunSummary;
+};
+
+/** The numbers of a run (`SplitResult.summary`, `--json`). */
+export type RunSummary = {
+  /** Files the run looked at (`paths`, or the config's `include`). */
+  filesScanned: number;
+  /** Of those, the ones that start with `"use client"`: each has a result. */
+  useClientFiles: number;
+  /** Splits plus removed directives. */
+  changes: number;
+  splits: number;
+  directivesRemoved: number;
+  /** Islands the changes create. */
+  islands: number;
+  skipped: number;
+  skippedByCode: Partial<Record<SkipCode, number>>;
+  /** Estimated gzip bytes the changes save together (conservative); absent when not measured. */
+  bytesSaved?: number;
+  /** Changes whose saving couldn't be measured. */
+  unmeasured: number;
+  warnings: Partial<Record<WarningCode, number>>;
+  /** App Router routes the changes affect. */
+  routes: number;
+  /** The route that saves the most up front. */
+  bestRoute?: { route: string; initialSaved: number };
 };
 
 export type UserConfig = {
@@ -69,6 +119,22 @@ export type UserConfig = {
   prettier?: "auto" | false;
   mongoose?: { autoSerialize?: boolean };
   removeUnusedDirectives?: boolean;
+  outputExists?: "skip" | "alternate";
+  rules?: RulesConfig;
+  /** What fails `--check` (see docs/configuration.md#check). Gzip bytes, conservative estimates. */
+  check?: {
+    minSaving?: number;
+    minRouteSaving?: number;
+    maxRecoverable?: number;
+    maxNewBoundaries?: number;
+  };
+  /** Commands `auto-server-split verify` runs after applying changes (type checker, tests, build). */
+  verify?: { commands: string[] };
+  /**
+   * In a workspace root's config: the apps `--workspace` runs on (globs, relative to the root).
+   * Without it, the workspace's Next.js App Router apps are found from its package globs.
+   */
+  projects?: string[];
 };
 
 export type ResolvedConfig = {
@@ -84,6 +150,11 @@ export type ResolvedConfig = {
   prettier: "auto" | false;
   mongoose: { autoSerialize: boolean };
   removeUnusedDirectives: boolean;
+  outputExists: "skip" | "alternate";
+  rules: Required<RulesConfig>;
+  check: NonNullable<UserConfig["check"]>;
+  verify: { commands: string[] };
+  projects: string[] | undefined;
 };
 
 export type SplitOptions = {
@@ -119,4 +190,12 @@ export type SplitOptions = {
   iterate?: boolean;
   /** Called with each file result as soon as it is ready. */
   onFile?: (result: FileResult) => void;
+  /** Work out which App Router routes each change affects (default true). */
+  routes?: boolean;
+  /**
+   * A Next.js analyzer snapshot to take route sizes from: the JSON Lines `next analyze export`
+   * prints, or a directory (the app, its `.next`, or `.next/diagnostics/analyze`) whose latest
+   * snapshot is exported with the project's `next`. Without it, sizes are esbuild estimates.
+   */
+  analyzeSnapshot?: string;
 };

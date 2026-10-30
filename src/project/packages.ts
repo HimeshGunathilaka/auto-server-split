@@ -1,4 +1,12 @@
-import { existsSync, openSync, readFileSync, readSync, closeSync, statSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  openSync,
+  readFileSync,
+  readSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
 import { builtinModules } from "node:module";
 import path from "node:path";
 import {
@@ -106,6 +114,25 @@ export class PackageClassifier {
   }
 }
 
+/**
+ * The real path of the file a bundler loads for `specifier` imported from `fromFile` (its
+ * `exports`, `module` or `main` entry), or undefined when it can't be found or the package has a
+ * `react-server` export, which could make the server load a different file.
+ */
+export function runtimeEntry(specifier: string, fromFile: string): string | undefined {
+  const name = packageNameOf(specifier);
+  const dir = findPackageDir(name, path.dirname(fromFile));
+  const pkg = dir && readPackageJson(dir);
+  if (!dir || !pkg) return undefined;
+  if (JSON.stringify(pkg.exports ?? null).includes('"react-server"')) return undefined;
+  const entry = resolveEntry(dir, pkg, specifier.slice(name.length));
+  try {
+    return entry && realpathSync(entry);
+  } catch {
+    return undefined;
+  }
+}
+
 function findPackageDir(name: string, fromDir: string): string | undefined {
   let dir = fromDir;
   for (;;) {
@@ -185,7 +212,17 @@ function resolveEntry(pkgDir: string, pkg: PackageJson, subpath: string): string
   }
   if (!target) return undefined;
   const base = path.join(pkgDir, target);
-  for (const candidate of [base, `${base}.js`, `${base}.mjs`, path.join(base, "index.js")]) {
+  const candidates = [
+    base,
+    `${base}.js`,
+    `${base}.mjs`,
+    `${base}.ts`,
+    `${base}.tsx`,
+    path.join(base, "index.js"),
+    path.join(base, "index.ts"),
+    path.join(base, "index.tsx"),
+  ];
+  for (const candidate of candidates) {
     if (existsSync(candidate) && statSync(candidate).isFile()) return candidate;
   }
   return undefined;

@@ -2,6 +2,87 @@
 
 All notable changes to this project are documented here. The project follows [Semantic Versioning](https://semver.org/).
 
+## 1.0.3 — explainability, routes, workspaces, more splits
+
+Explaining and reporting:
+
+- `--explain <file>` (API: `explain()`) explains one file:
+  - for a module, the `"use client"` boundary and the shortest import chain that make it client code, and the Server Components that render the boundary;
+  - for a module without a directive, whether a Server Component could import it, export by export;
+  - for a `"use client"` file, why each element needs the client and how the islands were formed (shared state, the closest common element, `.map()` hoisting, reads outside an island, server-rendered slots, props crossing);
+  - what happens to each import, and what to do about a skip, including a concrete extraction for context providers.
+- `--graph` lists the client boundaries: who renders each, the modules and packages each pulls into the browser bundle, and `"use client"` barrels that re-export modules which don't need the directive.
+- Route-aware savings. Each change lists the App Router routes that load it (`initial`, or `lazy` through `next/dynamic`/`import()`) and what it saves on each. `SplitResult.routes` totals it per route (island files included), the text summary names the route that saves the most, and the API option `routes: false` turns it off. It's computed from the module graph (page, layouts and boundary files, through Server Components to the client modules), with sizes from the esbuild bundles.
+  - `--analyze-snapshot <path>` (API: `analyzeSnapshot`) takes route sizes from a Next.js analyzer snapshot instead: `next analyze export` output, or the app directory, whose latest snapshot is exported with the project's `next`.
+  - On the blog e2e app, `/` is estimated at 19.7 KB (esbuild) and 21 KB (analyzer), and measured at 18.5 KB.
+- New output formats:
+  - `--format sarif` (GitHub code scanning, with fingerprints);
+  - `--format gitlab` (Code Quality);
+  - `--format html` (a self-contained report with filters, routes and diffs).
+- `--output <file>` writes a report and still prints the text output.
+- `--json` (and `split()`) adds `summary` (`RunSummary`: counts, skips by code, warnings by code, saving, routes) and `routes`, and each change gets a `fingerprint` that survives moves and line changes.
+- `auto-server-split compare <before.json> <after.json>` lists new opportunities, applied ones, savings that moved and skips that changed. It has `--format markdown`, and `--fail-on-new` exits `2` when there are new opportunities.
+
+CI:
+
+- Baselines are now version 2: changes with fingerprints and savings, every `"use client"` file, and totals. A component that moves keeps matching its entry. Version 1 files still read.
+- New `check` config sets what fails `--check`:
+  - `minSaving` / `minRouteSaving`: only changes above a saving fail;
+  - `maxRecoverable`: a budget for the total;
+  - `maxNewBoundaries`: new `"use client"` files compared with the baseline.
+    The summary says which rule failed.
+- `auto-server-split verify` runs the config's `verify.commands` (type checker, tests, build) and reports exit codes, durations and output tails. It has `--json`, `--keep-going`, and `--report` to add the result to a JSON report. Nothing runs on its own and nothing is rolled back.
+
+More splits:
+
+- Local modules are judged per export. A helper module that also exports a function reading
+  `navigator` or `window` no longer makes its other exports client-only. The module still has to
+  evaluate on the server:
+  - Next.js rejects a named import of a client-only React API (`useState`) anywhere in the server
+    graph (verified with a Turbopack build), so such a module stays client-only;
+  - code that runs on import counts, including local functions and callbacks that module-level
+    code calls, class `extends` clauses and static fields, and statements that attach functions to
+    exports;
+  - type imports never count.
+- `memo()` and `forwardRef()` are unwrapped, since every importer of a split file is a Server Component:
+  - forms covered: `const X = memo(...)`, `export default memo(X)`, `export const X = memo(Inner)` (and a plain `const X = Inner`) for a component declared in the file, `React.memo`, `memo(forwardRef(...))` and an inline comparison function;
+  - a `forwardRef` function's unused `ref` is dropped, and `forwardRef<T, P>`'s props type moves onto the parameter;
+  - a used `ref` and wrappers that can't be unwrapped still skip as `hoc`, with the reason.
+- Effects that no element uses (a `useEffect` setting `document.title`) move to an island that renders nothing, added as the last child of the returned element, where its effects run after everything the component renders, as before. Components with several returns, a component element as their root, a root that can't hold a child, or an island effect declared after the one that would move (their order would swap) still skip, and the message says why.
+- A `let` in a component body is supported when it's assigned only in the statements right after it
+  (`x = ...`, `x += ...`, or in `if`/`else if`/`else` branches): `let label = "Off"; if (on) label = "On";`
+  moves into the island with the state it reads, or stays on the server. A `let` assigned later or in
+  a callback, and a hook called while computing one, still skip.
+- `outputExists: "alternate"` puts the island into `X.island.client.tsx` (then `island2`, `island3`) when `X.client.tsx` already exists.
+- An anonymous default-exported component (`export default function (props) {...}` or `export default (props) => ...`) is split, and named after its file in island names (`BadgeSpan`, not `ComponentSpan`).
+- `rules` in the config classifies single exports and calls, not only whole packages:
+  - `clientOnlyImports` and `serverSafeExports` take `"pkg#export"` entries;
+  - `browserDependentCalls` keeps calls in islands like `Date.now()`;
+  - `warnings` adds a warning with your message (new warning code `rule`) when a named call moves to the server.
+
+Workflow:
+
+- `--watch` re-analyses on every source change and prints only the results that changed. Bundles are now cached for the whole process, so only changed files are rebundled.
+- Monorepos:
+  - `--workspace` runs on every Next.js App Router app of a pnpm, npm, Yarn or Bun workspace and reports them together, relative to the workspace root;
+  - `--project <dir>` (repeatable) and `projects` in the root config name the apps;
+  - workspace packages linked into `node_modules` are analysed from their source, so a server-safe component from `packages/ui` can stay on the server.
+
+Other:
+
+- Size estimates count a package with a `"use client"` entry as still shipped when a Server
+  Component renders it, including the server part of a split file (`<Toaster />` from a toast
+  library). Such packages used to be counted as saved.
+- `ConfigError` and the new `SnapshotError` are exported.
+- `split()` and `explain()` reject what they can't use with a `ConfigError`, instead of guessing: an
+  unknown option, a wrong type (`paths: "app"`), a path outside the root, or a missing root, config
+  file or file to explain.
+- `src/report.ts` moved to `src/report/`.
+- The README is shorter, with diagrams of what the tool does and how to use it. The full reference
+  moved to docs/cli.md, docs/ci.md and docs/how-it-works.md.
+- e2e: the blog app has an `/extra` route covering an effects island, `memo`, `forwardRef` and a per-export-safe helper. All render the same HTML and DOM after the split.
+- docs/prior-art.md: RSC X-Ray, client-creep, RSC Boundary, the ServiceUp ESLint plugin and next-component-analyzer, and the status of React Router's and TanStack Start's RSC support. The shiftyp entry is corrected: it's an early prototype.
+
 ## 1.0.2 — chained splits, unused directives, timezone warnings, CI reports
 
 - Chained splits in one run. A component that only a client component imports is skipped as

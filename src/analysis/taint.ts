@@ -4,6 +4,8 @@ import type { FrameworkAdapter } from "./framework.js";
 import type { ImportBinding, ImportTable, ProjectModuleSafety, UsageClass } from "./importTable.js";
 import { classifyImportUsage } from "./importTable.js";
 import { HOOK_NAME_RE, calleeName, forEachValueRef, symbolOfRef } from "./refs.js";
+import type { CallTarget, SafetyRules } from "./rules.js";
+import { describeCall } from "./rules.js";
 
 /** Globals that only exist (or only make sense) in the browser. */
 const BROWSER_GLOBALS = new Set([
@@ -104,6 +106,7 @@ export class FileFacts {
     readonly framework: FrameworkAdapter,
     readonly projectSafety: ProjectModuleSafety,
     readonly serverSafeHooks: ReadonlySet<string>,
+    readonly rules?: SafetyRules,
   ) {}
 
   classifyRef(id: ts.Identifier): RefInfo {
@@ -131,7 +134,14 @@ export class FileFacts {
       return {
         kind: "import",
         binding,
-        usage: classifyImportUsage(binding, member, asJsxTag, this.framework, this.projectSafety),
+        usage: classifyImportUsage(
+          binding,
+          member,
+          asJsxTag,
+          this.framework,
+          this.projectSafety,
+          this.rules,
+        ),
       };
     }
     const decl = symbol.valueDeclaration ?? symbol.declarations?.[0];
@@ -175,7 +185,10 @@ export class FileFacts {
         markers.push({ kind: "hook", node: n, detail: `${calleeName(n) ?? "hook"}()` });
       }
       const nondeterministic =
-        nondeterministicCall(n) ?? clockReadingCall(this.checker, n) ?? this.localeDependentCall(n);
+        nondeterministicCall(n) ??
+        clockReadingCall(this.checker, n) ??
+        this.localeDependentCall(n) ??
+        this.ruleDependentCall(n);
       if (nondeterministic)
         markers.push({ kind: "nondeterministic", node: n, detail: nondeterministic });
       ts.forEachChild(n, visit);
@@ -206,6 +219,42 @@ export class FileFacts {
       stop,
     );
     return markers;
+  }
+
+  /** What a call calls, as `rules` entries name it (an imported export or a global path). */
+  callTarget(call: ts.CallExpression | ts.NewExpression): CallTarget | undefined {
+    const members: string[] = [];
+    let head: ts.Expression = call.expression;
+    while (ts.isPropertyAccessExpression(head)) {
+      members.unshift(head.name.text);
+      head = head.expression;
+    }
+    if (!ts.isIdentifier(head)) return undefined;
+    const info = this.classifyRef(head);
+    if (info.kind === "import") {
+      const { binding } = info;
+      if (binding.module.kind !== "external") return undefined;
+      if (binding.imported === "*")
+        return members.length === 1 && members[0]
+          ? { specifier: binding.specifier, exportName: members[0] }
+          : undefined;
+      return members.length === 0
+        ? { specifier: binding.specifier, exportName: binding.imported }
+        : undefined;
+    }
+    if (info.kind === "global" || info.kind === "browser-global")
+      return { global: [head.text, ...members].join(".") };
+    return undefined;
+  }
+
+  /** A call `rules.browserDependentCalls` names. */
+  private ruleDependentCall(n: ts.Node): string | undefined {
+    if (!this.rules?.hasCallRules || (!ts.isCallExpression(n) && !ts.isNewExpression(n)))
+      return undefined;
+    const target = this.callTarget(n);
+    return target && this.rules.browserDependent(target)
+      ? `${describeCall(target)} (rules.browserDependentCalls)`
+      : undefined;
   }
 
   /**
