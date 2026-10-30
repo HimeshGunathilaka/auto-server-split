@@ -39,6 +39,11 @@ export type ModuleEdge = {
   external: ExternalModuleInfo | undefined;
   /** 1-based line of the import in `from`. */
   line: number;
+  /**
+   * While the graph is built: the real path of a linked package's source (a workspace package)
+   * that becomes `to` if the program loaded it.
+   */
+  linked?: string;
 };
 
 export type ModuleNode = {

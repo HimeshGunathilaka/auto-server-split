@@ -332,4 +332,57 @@ export function Keep() {
     expect(a?.bytesSaved?.isolated).toBeGreaterThan(5000);
     expect(a?.bytesSaved?.conservative).toBeLessThan(500);
   });
+
+  it("measures again when a file the component imports changes", async () => {
+    const root = path.resolve(
+      import.meta.dirname,
+      ".tmp",
+      `estimate-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+    projects.push(root);
+    const write = (rel: string, content: string) => {
+      mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
+      writeFileSync(path.join(root, rel), content);
+    };
+    const big = `export const blob = ${JSON.stringify("x".repeat(20000).replace(/x/g, () => Math.random().toString(36).slice(2, 3)))};\n`;
+    write(
+      "node_modules/fake-big/package.json",
+      JSON.stringify({ name: "fake-big", main: "index.js" }),
+    );
+    write("node_modules/fake-big/index.js", big);
+    write("node_modules/fake-big/index.d.ts", "export declare const blob: string;\n");
+    write("lib/render.ts", "export const render = (s: string) => s.trim();\n");
+    write(
+      "components/Heavy.tsx",
+      `"use client";
+import { useState } from "react";
+import { render } from "../lib/render";
+export function Heavy({ text }: { text: string }) {
+  const [n, setN] = useState(0);
+  return (
+    <section>
+      <p>{render(text)}</p>
+      <button onClick={() => setN(n + 1)}>{n}</button>
+    </section>
+  );
+}
+`,
+    );
+    const run = async () =>
+      (
+        await split({
+          root,
+          paths: ["components"],
+          noConfigFile: true,
+          config: { minBytesSaved: 0 },
+        })
+      ).files.find((f) => f.file === "components/Heavy.tsx");
+    expect((await run())?.bytesSaved?.isolated).toBeLessThan(1000);
+    // Same process (as in --watch), same component source, but its import now pulls in a package.
+    write(
+      "lib/render.ts",
+      'import { blob } from "fake-big";\nexport const render = (s: string) => s.trim() + blob.slice(0, 1);\n',
+    );
+    expect((await run())?.bytesSaved?.isolated).toBeGreaterThan(5000);
+  });
 });

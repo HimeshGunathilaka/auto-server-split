@@ -1,9 +1,10 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createTwoFilesPatch } from "diff";
 import fg from "fast-glob";
 import { ts } from "ts-morph";
-import { analyzeFileShape } from "./analysis/components.js";
+import { analyzeFileShape, wrapperCalleeHeads } from "./analysis/components.js";
 import { findIgnoreComment, findIgnoreCommentOutsideHeader } from "./analysis/directives.js";
 import type { Warning } from "./analysis/warnings.js";
 import { findTimezoneWarnings } from "./analysis/timezone.js";
@@ -13,28 +14,50 @@ import type { FrameworkAdapter } from "./analysis/framework.js";
 import { buildImportTable } from "./analysis/importTable.js";
 import { checkImporters } from "./analysis/importers.js";
 import type { ComponentInfo } from "./analysis/components.js";
-import type { ComponentPlan } from "./analysis/islands.js";
-import { planComponent } from "./analysis/islands.js";
+import type { ComponentPlan, PlanTrace } from "./analysis/islands.js";
+import { planComponent, unitNodes } from "./analysis/islands.js";
 import { tagNameText } from "./analysis/refs.js";
 import { ModuleSafety } from "./analysis/moduleSafety.js";
+import { findRuleWarnings } from "./analysis/ruleWarnings.js";
+import { SafetyRules } from "./analysis/rules.js";
 import type { Outcome, Skip } from "./analysis/skip.js";
 import { ok, skip } from "./analysis/skip.js";
 import { FileFacts, findEnvProblem } from "./analysis/taint.js";
-import { findConfigFile, loadConfigFile, resolveConfig, validateConfig } from "./config/config.js";
-import { couldBecomeRoute, nextAdapter, readPageExtensions } from "./frameworks/next.js";
+import {
+  ConfigError,
+  findConfigFile,
+  loadConfigFile,
+  resolveConfig,
+  validateConfig,
+} from "./config/config.js";
+import {
+  couldBecomeRoute,
+  findAppRoutes,
+  nextAdapter,
+  readPageExtensions,
+} from "./frameworks/next.js";
+import { yarnPnpProblem } from "./workspace.js";
 import type { BundleMeasurer, Measurement, SplitCandidate } from "./measure/bundleSize.js";
+import type { AnalyzerSnapshot } from "./measure/nextAnalyze.js";
+import { readAnalyzerSnapshot } from "./measure/nextAnalyze.js";
+import type { FileRoute } from "./measure/routes.js";
+import { routeSavings } from "./measure/routes.js";
 import type { LoadedProject } from "./project/loadProject.js";
 import { IGNORE_GLOBS, loadProject, setSourceText } from "./project/loadProject.js";
 import type { ModuleGraph } from "./project/moduleGraph.js";
 import { buildModuleGraph } from "./project/moduleGraph.js";
 import { PackageClassifier } from "./project/packages.js";
-import { emitSplit, withoutDirective } from "./transform/emit.js";
+import { emitDirectiveRemoval, emitSplit } from "./transform/emit.js";
 import { projectFormatter } from "./transform/format.js";
 import { hasMixedLineEndings, lineEndingOf, withLineEnding } from "./transform/text.js";
 import type { FileResult, IslandInfo, ResolvedConfig, SplitOptions, SplitResult } from "./types.js";
+import { summarize } from "./summary.js";
 import { selfCheck } from "./verify/selfCheck.js";
 
 const STYLESHEET_RE = /\.(css|scss|sass|less|styl|pcss)$/;
+
+/** An analyzer snapshot (`analyzeSnapshot`) that can't be read. */
+export class SnapshotError extends Error {}
 
 export type RunContext = {
   root: string;
@@ -45,6 +68,8 @@ export type RunContext = {
   classifier: PackageClassifier;
   moduleSafety: ModuleSafety;
   serverSafeHooks: ReadonlySet<string>;
+  /** The config's `rules`, compiled. */
+  rules: SafetyRules;
   pageExtensions: ReturnType<typeof readPageExtensions>;
   measurer: BundleMeasurer | undefined;
   /** The splits the run's size estimates assume (see estimateSavings), once computed. */
@@ -63,6 +88,8 @@ type Planned = {
   originalText: string;
   candidate: SplitCandidate;
   warnings: Warning[];
+  componentName: string;
+  componentSource: string;
 };
 
 /** Builds the shared state for one run: project, module graph, classifiers. Synchronous. */
@@ -80,10 +107,11 @@ export function createRunContext(
 
 function contextFor(root: string, config: ResolvedConfig, loaded: LoadedProject): RunContext {
   const framework = nextAdapter;
+  const rules = new SafetyRules(config.rules);
   const classifier = new PackageClassifier(
     framework,
-    config.clientOnlyPackages,
-    config.serverSafePackages,
+    [...config.clientOnlyPackages, ...rules.clientOnlyPackages],
+    [...config.serverSafePackages, ...rules.serverSafePackages],
   );
   const graph = buildModuleGraph(loaded, classifier);
   const serverSafeHooks = new Set(config.serverSafeHooks);
@@ -92,6 +120,7 @@ function contextFor(root: string, config: ResolvedConfig, loaded: LoadedProject)
     graph,
     framework,
     serverSafeHooks,
+    rules,
   );
   return {
     root,
@@ -102,6 +131,7 @@ function contextFor(root: string, config: ResolvedConfig, loaded: LoadedProject)
     classifier,
     moduleSafety,
     serverSafeHooks,
+    rules,
     pageExtensions: readPageExtensions(root),
     measurer: undefined,
   };
@@ -115,9 +145,70 @@ export function isChange(result: FileResult): boolean {
   return result.status === "split" || result.status === "directive-removed";
 }
 
-export async function runSplit(options: SplitOptions = {}): Promise<
+/**
+ * Options of a run. `trace`: the planning decisions for one file, as of the last pass that
+ * analysed it, are put in `components` (per component name); the file is targeted even when
+ * `paths` and `include` don't cover it.
+ */
+export type RunOptions = SplitOptions & {
+  trace?: { file: string; components: Map<string, PlanTrace> };
+};
+
+const OPTION_TYPES: Record<string, "string" | "strings" | "boolean" | "object" | "function"> = {
+  root: "string",
+  paths: "strings",
+  only: "strings",
+  baseline: "strings",
+  write: "boolean",
+  config: "object",
+  configFile: "string",
+  noConfigFile: "boolean",
+  measure: "boolean",
+  iterate: "boolean",
+  onFile: "function",
+  routes: "boolean",
+  analyzeSnapshot: "string",
+  // explain()'s own options, passed through.
+  file: "string",
+  trace: "object",
+};
+
+/** Rejects options a caller got wrong (an unknown key, `paths: "x"`) instead of guessing. */
+function validateOptions(options: RunOptions, root: string): void {
+  const problems: string[] = [];
+  for (const [key, value] of Object.entries(options)) {
+    const type = OPTION_TYPES[key];
+    if (value === undefined) continue;
+    if (!type) {
+      problems.push(`unknown option "${key}"`);
+      continue;
+    }
+    const ok =
+      type === "strings"
+        ? Array.isArray(value) && value.every((v) => typeof v === "string")
+        : type === "object"
+          ? typeof value === "object" && value !== null && !Array.isArray(value)
+          : typeof value === type;
+    if (!ok)
+      problems.push(`${key} must be ${type === "strings" ? "an array of strings" : `a ${type}`}`);
+  }
+  for (const key of ["paths", "only", "baseline"] as const) {
+    const value = options[key];
+    if (!Array.isArray(value)) continue;
+    for (const p of value) {
+      const relative = path.relative(root, path.resolve(root, p));
+      if (relative.startsWith("..") || path.isAbsolute(relative))
+        problems.push(`${key}: ${p} is outside the root (${root})`);
+    }
+  }
+  if (problems.length > 0) throw new ConfigError(`split(): ${problems.join("; ")}`);
+}
+
+export async function runSplit(options: RunOptions = {}): Promise<
   SplitResult & {
     filesScanned: number;
+    /** The run's context as of the first pass (its module graph describes the project on disk). */
+    run: RunContext;
     /**
      * Re-runs one file with island renames (interactive mode). Only for single-pass runs
      * (`iterate: false`): later passes change the project the first pass analysed.
@@ -125,19 +216,45 @@ export async function runSplit(options: SplitOptions = {}): Promise<
     rerun: (relFile: string, renames: Readonly<Record<string, string>>) => Promise<FileResult>;
   }
 > {
+  if (typeof options !== "object" || options === null)
+    throw new ConfigError("split(): options must be an object");
+  const rootArg = path.resolve(typeof options.root === "string" ? options.root : process.cwd());
+  if (!existsSync(rootArg)) throw new ConfigError(`split(): root ${rootArg} does not exist`);
   // Real path: TypeScript resolves symlinks (e.g. macOS /var -> /private/var), so globbed paths must too.
-  const root = realpathSync(path.resolve(options.root ?? process.cwd()));
+  const root = realpathSync(rootArg);
+  validateOptions(options, root);
+  const pnp = yarnPnpProblem(root);
+  if (pnp) throw new Error(pnp);
   const configFile = options.noConfigFile
     ? undefined
     : options.configFile
       ? path.resolve(root, options.configFile)
       : findConfigFile(root);
+  if (configFile && !existsSync(configFile))
+    throw new ConfigError(`split(): the config file ${options.configFile} does not exist`);
   const fileConfig = configFile ? await loadConfigFile(configFile) : undefined;
   const overrides = options.config
     ? validateConfig(options.config, "split({ config })")
     : undefined;
   const config = resolveConfig(fileConfig, overrides);
   const iterate = options.iterate !== false;
+  let snapshot: AnalyzerSnapshot | undefined;
+  if (options.analyzeSnapshot) {
+    const read = readAnalyzerSnapshot(root, options.analyzeSnapshot);
+    if ("error" in read)
+      throw new SnapshotError(
+        `can't read the analyzer snapshot ${options.analyzeSnapshot}: ${read.error}`,
+      );
+    // Module keys are project paths (or package names): a snapshot of another app has none here.
+    const files = [...read.routes.values()].flatMap((r) =>
+      [...r.initial.keys(), ...r.lazy.keys()].filter((k) => /\.[cm]?[jt]sx?$/.test(k)),
+    );
+    if (files.length > 0 && !files.some((k) => existsSync(path.join(root, k))))
+      throw new SnapshotError(
+        `the analyzer snapshot ${options.analyzeSnapshot} describes another project: none of its ${new Set(files).size} source files are in ${root}`,
+      );
+    snapshot = read;
+  }
 
   const run = createRunContext(root, config);
   if (options.baseline) run.baseline = new Set(options.baseline.map((f) => path.resolve(root, f)));
@@ -151,6 +268,14 @@ export async function runSplit(options: SplitOptions = {}): Promise<
   const targets = selectTargets(root, options.paths, config, run.baseline).filter(
     (file) => !only || only.has(file),
   );
+  const traceFile = options.trace && path.resolve(root, options.trace.file);
+  if (
+    traceFile &&
+    !targets.includes(traceFile) &&
+    run.graph.nodes.has(traceFile) &&
+    !isIslandFile(traceFile, config)
+  )
+    targets.push(traceFile);
   const results = new Map<string, FileResult>();
   const report = (file: string, result: FileResult) => {
     results.set(file, result);
@@ -176,7 +301,9 @@ export async function runSplit(options: SplitOptions = {}): Promise<
     passes++;
     const changed: Planned[] = [];
     for (const file of files) {
-      const outcome = await planSafely(ctx, file);
+      const traces = file === traceFile ? options.trace?.components : undefined;
+      traces?.clear();
+      const outcome = await planSafely(ctx, file, {}, traces);
       if (outcome.ok) {
         const before = held.get(file);
         if (before) unblocked.set(file, before);
@@ -221,6 +348,25 @@ export async function runSplit(options: SplitOptions = {}): Promise<
     );
   }
   const kept = run.estimate?.kept ?? new Set(planned.keys());
+  // Which routes each change affects, and what it saves there.
+  const appRoutes =
+    options.routes === false || !run.pageExtensions.ok
+      ? []
+      : findAppRoutes(root, run.pageExtensions.extensions);
+  const routes =
+    appRoutes.length > 0 && kept.size > 0
+      ? routeSavings({
+          root,
+          graph: run.graph,
+          routes: appRoutes,
+          changes:
+            run.estimate?.candidates ??
+            [...planned.values()].map((p) => p.value.candidate).filter((c) => kept.has(c.file)),
+          reported: new Set([...planned.keys()].filter((f) => kept.has(f))),
+          measurer: run.measurer,
+          snapshot,
+        })
+      : undefined;
   const allRequired = (file: string): string[] => {
     const out = new Set<string>();
     const pending = [...(requires.get(file) ?? [])];
@@ -255,7 +401,14 @@ export async function runSplit(options: SplitOptions = {}): Promise<
     report(
       file,
       saving.ok
-        ? changeResult(fileCtx, file, value, saving.value, allRequired(file))
+        ? changeResult(
+            fileCtx,
+            file,
+            value,
+            saving.value,
+            allRequired(file),
+            routes?.files.get(file),
+          )
         : skippedResult(fileCtx, file, saving.skip),
     );
   }
@@ -274,7 +427,10 @@ export async function runSplit(options: SplitOptions = {}): Promise<
   }
   return {
     files: allFiles,
+    ...(routes ? { routes: routes.routes } : {}),
+    summary: summarize(allFiles, targets.length, routes?.routes),
     filesScanned: targets.length,
+    run,
     rerun: async (relFile, renames) => {
       if (passes > 1) throw new Error("rerun() needs a single-pass run (iterate: false)");
       const file = path.resolve(root, relFile);
@@ -339,6 +495,51 @@ function selectTargets(
     .sort();
 }
 
+/**
+ * Identifies a change across runs without its path or line numbers: the kind of change, the main
+ * component, its islands' names and its components' source (whitespace aside). A baseline entry
+ * still matches after the file moves or other code shifts it; it stops matching when the islands
+ * or the components change.
+ */
+export function changeFingerprint(
+  status: FileResult["status"],
+  componentName: string,
+  islands: readonly IslandInfo[],
+  componentSource = "",
+): string {
+  const names = islands.map((i) => `${i.name}<${i.rootTag}>`).sort();
+  return createHash("sha256")
+    .update([status, componentName, ...names, componentSource].join("\0"))
+    .digest("hex")
+    .slice(0, 16);
+}
+
+/** Alternate island names tried after `X.client.tsx` with `outputExists: "alternate"`. */
+const ALTERNATE_ISLAND_NAMES = 3;
+
+/**
+ * The island file for `file`: `X.client.tsx`, or with `outputExists: "alternate"` the first free
+ * one of `X.island.client.tsx`, `X.island2.client.tsx`... Never a file that `exists`; otherwise
+ * `taken` lists the names tried.
+ */
+function islandFileFor(
+  file: string,
+  dir: string,
+  config: ResolvedConfig,
+  exists: (file: string) => boolean,
+): { ok: true; file: string } | { ok: false; taken: string[] } {
+  const ext = path.extname(file);
+  const base = path.basename(file, ext);
+  const names = [`${base}${config.clientFileSuffix}${ext}`];
+  if (config.outputExists === "alternate") {
+    for (let n = 1; n <= ALTERNATE_ISLAND_NAMES; n++)
+      names.push(`${base}.island${n === 1 ? "" : n}${config.clientFileSuffix}${ext}`);
+  }
+  const candidates = names.map((name) => path.join(dir, name));
+  const free = candidates.find((candidate) => !exists(candidate));
+  return free ? { ok: true, file: free } : { ok: false, taken: candidates };
+}
+
 /** `X.client.tsx`: a generated island (or a file named like one), never a candidate itself. */
 export function isIslandFile(file: string, config: ResolvedConfig): boolean {
   return path.basename(file, path.extname(file)).endsWith(config.clientFileSuffix);
@@ -353,9 +554,10 @@ async function planSafely(
   run: RunContext,
   file: string,
   renames: Readonly<Record<string, string>> = {},
+  traces?: Map<string, PlanTrace>,
 ): Promise<Outcome<Planned>> {
   try {
-    return await planFile(run, file, renames);
+    return await planFile(run, file, renames, traces);
   } catch (error) {
     const err = error as Error;
     return skip("internal-error", `${err.message}\n${err.stack ?? ""}`);
@@ -380,6 +582,7 @@ function changeResult(
   value: Planned,
   saving: Saving,
   requires: string[] = [],
+  routes: FileRoute[] = [],
 ): FileResult {
   const relFile = rel(run.root, file);
   const diff = Object.entries(value.outputs)
@@ -396,15 +599,23 @@ function changeResult(
       );
     })
     .join("");
+  const status = value.candidate.island ? "split" : "directive-removed";
   return {
     file: relFile,
-    status: value.candidate.island ? "split" : "directive-removed",
+    status,
+    fingerprint: changeFingerprint(
+      status,
+      value.componentName,
+      value.islands,
+      value.componentSource,
+    ),
     islands: value.islands,
     staticRatio: value.staticRatio,
     ...(saving.bytesSaved ? { bytesSaved: saving.bytesSaved } : {}),
     ...(saving.measureError ? { measureError: saving.measureError } : {}),
     ...(value.warnings.length > 0 ? { warnings: value.warnings } : {}),
     ...(requires.length > 0 ? { requires } : {}),
+    ...(routes.length > 0 ? { routes } : {}),
     diff,
     outputs: value.outputs,
   };
@@ -425,6 +636,8 @@ export type Analyzed = {
   originalText: string;
   /** Name of the main component (the default export, else the first exported one). */
   componentName: string;
+  /** The components' declarations, whitespace collapsed: part of the change's fingerprint. */
+  componentSource: string;
   /** Risks the change carries without being refused (code that now renders on the server). */
   warnings: Warning[];
 };
@@ -434,6 +647,8 @@ export function analyzeFile(
   run: RunContext,
   file: string,
   renames: Readonly<Record<string, string>> = {},
+  /** Filled in with each component's planning decisions (`--explain`). */
+  traces?: Map<string, PlanTrace>,
 ): Outcome<Analyzed> {
   const { loaded, graph, config, framework, root } = run;
   const node = graph.nodes.get(file);
@@ -503,7 +718,6 @@ export function analyzeFile(
   const dir = config.islandsDir
     ? path.join(path.dirname(file), config.islandsDir)
     : path.dirname(file);
-  const islandFile = path.join(dir, `${path.basename(file, ext)}${config.clientFileSuffix}${ext}`);
   // ---- whole-file checks ----------------------------------------------------------------------
   const imports = buildImportTable(sf, checker, graph);
   const facts = new FileFacts(
@@ -513,6 +727,7 @@ export function analyzeFile(
     framework,
     run.moduleSafety.check,
     run.serverSafeHooks,
+    run.rules,
   );
   for (const decl of imports.sideEffectImports) {
     const spec = (decl.moduleSpecifier as ts.StringLiteral).text;
@@ -547,10 +762,13 @@ export function analyzeFile(
     let grew = false;
     for (const component of components) {
       if (wholesale.has(component)) continue;
+      const trace = traces ? { anchors: [], steps: [] } : undefined;
       const plan = planComponent(ctx, facts, shape.value, component, {
         serverActionProps: importerCheck.value.serverActionProps,
         wholesale,
+        ...(trace ? { trace } : {}),
       });
+      if (trace) traces?.set(component.name, trace);
       if (plan.ok) {
         plans.push(plan.value);
         continue;
@@ -579,6 +797,9 @@ export function analyzeFile(
     components.find((c) => c.exported !== "none") ??
     components[0];
   const componentName = main?.name ?? path.basename(file, ext);
+  const componentSource = components
+    .map((c) => c.statement.getText(sf).replace(/\s+/g, " "))
+    .join("\0");
   if (plans.length === 0 && wholesale.size === 0) {
     const names = `${components.map((c) => c.name).join(", ")} ${components.length === 1 ? "uses" : "use"}`;
     if (!config.removeUnusedDirectives) {
@@ -591,7 +812,7 @@ export function analyzeFile(
     // file is client-only, so it can run as a Server Component as it is.
     return ok({
       file,
-      serverText: withoutDirective(sf),
+      serverText: emitDirectiveRemoval(ctx, shape.value, imports),
       island: undefined,
       islands: [],
       staticRatio: 1,
@@ -600,7 +821,12 @@ export function analyzeFile(
       isJs,
       originalText: sf.text,
       componentName,
-      warnings: [...findTimezoneWarnings(ctx, () => true), ...ignoreWarnings],
+      componentSource,
+      warnings: [
+        ...findTimezoneWarnings(ctx, () => true),
+        ...findRuleWarnings(ctx, facts, () => true),
+        ...ignoreWarnings,
+      ],
     });
   }
   if (components.every((c) => wholesale.has(c) || c.exported === "none") && plans.length === 0) {
@@ -631,31 +857,37 @@ export function analyzeFile(
   const serverSlots: ts.Node[] = [];
   for (const plan of plans) {
     for (const island of plan.islands) {
-      toIsland.push(island.root.node);
+      if (!island.effects) toIsland.push(island.root.node);
       serverSlots.push(...island.slots.map((slot) => slot.j.node));
     }
-    for (const unit of plan.removedUnits) toIsland.push(unit.node);
+    for (const unit of plan.removedUnits) toIsland.push(...unitNodes(unit));
     for (const decl of plan.movedModuleDecls) toIsland.push(decl.statement);
   }
   const within = (outer: ts.Node, node: ts.Node) =>
     node.getStart(sf) >= outer.getStart(sf) && node.getEnd() <= outer.getEnd();
+  const stays = (node: ts.Node) =>
+    serverSlots.some((slot) => within(slot, node)) ||
+    !toIsland.some((moved) => within(moved, node));
   const warnings = [
-    ...findTimezoneWarnings(
-      ctx,
-      (node) =>
-        serverSlots.some((slot) => within(slot, node)) ||
-        !toIsland.some((moved) => within(moved, node)),
-    ),
+    ...findTimezoneWarnings(ctx, stays),
+    ...findRuleWarnings(ctx, facts, stays),
     ...ignoreWarnings,
   ];
 
   // ---- output location --------------------------------------------------------------------------
-  if (existsSync(islandFile) || loaded.project.getSourceFile(islandFile)) {
+  const chosen = islandFileFor(file, dir, config, (f) =>
+    Boolean(existsSync(f) || loaded.project.getSourceFile(f)),
+  );
+  if (!chosen.ok) {
+    const taken = chosen.taken.map((f) => rel(root, f));
     return skip(
       "output-exists",
-      `${rel(root, islandFile)} already exists; existing files are never merged into`,
+      taken.length > 1
+        ? `${taken.join(", ")} already exist; existing files are never merged into`
+        : `${taken[0] ?? ""} already exists; existing files are never merged into (set outputExists: "alternate" to use another name)`,
     );
   }
+  const islandFile = chosen.file;
   if (!run.pageExtensions.ok) return skip("would-create-route", run.pageExtensions.reason);
   if (couldBecomeRoute(root, islandFile, run.pageExtensions.extensions)) {
     return skip(
@@ -706,6 +938,7 @@ export function analyzeFile(
       rootTag: i.rootTag,
       props: [...i.props.map((p) => p.name), ...i.slots.map((slot) => slot.name)],
       line: i.line,
+      ...(i.effects ? { effects: true } : {}),
     })),
     ...movedInfo,
   ].sort((a, b) => a.line - b.line);
@@ -721,6 +954,7 @@ export function analyzeFile(
     isJs,
     originalText: sf.text,
     componentName,
+    componentSource,
     warnings,
   });
 }
@@ -740,6 +974,7 @@ export function checkAnalyzed(
     classifier: run.classifier,
     moduleSafety: run.moduleSafety,
     serverSafeHooks: run.serverSafeHooks,
+    rules: run.rules,
     file: analyzed.file,
     serverText,
     island: island && { ...island, text: islandText ?? island.text },
@@ -753,9 +988,10 @@ async function planFile(
   run: RunContext,
   file: string,
   renames: Readonly<Record<string, string>>,
+  traces?: Map<string, PlanTrace>,
 ): Promise<Outcome<Planned>> {
   const { config, root } = run;
-  const analyzed = analyzeFile(run, file, renames);
+  const analyzed = analyzeFile(run, file, renames, traces);
   if (!analyzed.ok) return analyzed;
   const a = analyzed.value;
   let serverText = a.serverText;
@@ -778,8 +1014,10 @@ async function planFile(
     islands: a.islands,
     staticRatio: a.staticRatio,
     originalText: a.originalText,
-    candidate: { file, originalText: a.originalText, ...(island ? { island } : {}) },
+    candidate: { file, originalText: a.originalText, serverText, ...(island ? { island } : {}) },
     warnings: a.warnings,
+    componentName: a.componentName,
+    componentSource: a.componentSource,
   });
 }
 
@@ -792,6 +1030,8 @@ export type SavingsEstimate = {
   outcome(candidate: SplitCandidate): Outcome<Saving>;
   /** The candidates the estimates assume are applied: those that pass `minBytesSaved` together. */
   kept: ReadonlySet<string>;
+  /** The kept candidates themselves (this run's and the other proposed changes). */
+  candidates: readonly SplitCandidate[];
 };
 
 /**
@@ -812,8 +1052,8 @@ export function extraCandidates(
       prepare?.(file);
       const analyzed = analyzeFile(run, file);
       if (analyzed.ok) {
-        const { originalText, island } = analyzed.value;
-        out.push({ file, originalText, ...(island ? { island } : {}) });
+        const { originalText, island, serverText } = analyzed.value;
+        out.push({ file, originalText, serverText, ...(island ? { island } : {}) });
       }
     } catch {
       // Reported when that file itself is split or linted; here it just isn't a split.
@@ -845,7 +1085,12 @@ export function estimateSavings(
   } = {},
 ): SavingsEstimate {
   const { measurer, config } = run;
-  if (!measurer) return { outcome: () => ok({}), kept: new Set(planned.map((c) => c.file)) };
+  if (!measurer)
+    return {
+      outcome: () => ok({}),
+      kept: new Set(planned.map((c) => c.file)),
+      candidates: planned,
+    };
   const requires = options.requires ?? new Map<string, readonly string[]>();
   const candidates = new Map(
     (options.extras ?? extraCandidates(run, decided, options.prepare)).map((c) => [c.file, c]),
@@ -874,6 +1119,7 @@ export function estimateSavings(
   const finalMeasured = measured;
   return {
     kept: new Set(final.map((c) => c.file)),
+    candidates: final,
     outcome: (candidate) => {
       const same = final.find((c) => c.file === candidate.file);
       const m =
@@ -918,7 +1164,10 @@ function savingOutcome(
 }
 
 function specialApiSkip(ctx: AnalysisContext, facts: FileFacts): Skip | undefined {
+  // memo()/forwardRef() around a component: analyzeFileShape decides whether it can be unwrapped.
+  const wrappers = wrapperCalleeHeads(ctx.sf, facts);
   for (const marker of facts.scanMarkers(ctx.sf)) {
+    if (marker.special === "hoc" && wrappers.has(marker.node)) continue;
     const loc = locOf(ctx, marker.node);
     switch (marker.special) {
       case "css-in-js":

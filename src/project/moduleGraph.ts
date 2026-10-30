@@ -7,6 +7,7 @@ import type { LoadedProject } from "./loadProject.js";
 import { IGNORE_GLOBS, projectSourceFiles } from "./loadProject.js";
 import type { ModuleEdge, ModuleNode, EdgeKind } from "./moduleTypes.js";
 import type { PackageClassifier } from "./packages.js";
+import { runtimeEntry } from "./packages.js";
 
 const SOURCE_EXT_RE = /\.(tsx?|jsx?|mts|cts|mjs|cjs)$/;
 
@@ -32,7 +33,13 @@ export class ModuleGraph {
    * and their island files (if any) become roots. Returns every project module it reaches and the
    * packages those modules import.
    */
-  clientGraphAfter(split: readonly { file: string; island?: { file: string; text: string } }[]): {
+  clientGraphAfter(
+    split: readonly {
+      file: string;
+      island?: { file: string; text: string };
+      serverText?: string;
+    }[],
+  ): {
     files: Set<string>;
     packages: Set<string>;
   } {
@@ -57,6 +64,16 @@ export class ModuleGraph {
         }
       }
     }
+    // Client Components from packages (a "use client" entry) that Server Components render ship
+    // too, including the ones a split file's server part still renders.
+    const clientEntries = (edges: readonly ModuleEdge[]) => {
+      for (const edge of edges)
+        if (edge.kind !== "type" && edge.external?.kind === "use-client-entry")
+          packages.add(edge.external.packageName);
+    };
+    for (const node of this.nodes.values())
+      if (!files.has(node.file) && !splitFiles.has(node.file)) clientEntries(node.edges);
+    for (const s of split) if (s.serverText) clientEntries(this.edgesOfText(s.file, s.serverText));
     return { files, packages };
   }
 
@@ -129,6 +146,20 @@ export class ModuleGraph {
       }
     }
     return roots;
+  }
+
+  /**
+   * The shortest import chain that makes `file` client code: the `"use client"` module first,
+   * `file` last. Empty when `file` isn't client code.
+   */
+  clientChain(file: string): string[] {
+    const chain: string[] = [];
+    let current: string | null | undefined = file;
+    while (current && this.clientParent.has(current) && chain.length < 10_000) {
+      chain.unshift(current);
+      current = this.clientParent.get(current);
+    }
+    return chain;
   }
 
   /** The "use client" module that pulls `file` into the client graph, if it's not a root itself. */
@@ -234,18 +265,30 @@ export function buildModuleGraph(
     : ts.sys;
   const cache = ts.createModuleResolutionCache(loaded.root, (f) => f, options);
 
-  const resolve = (specifier: string, from: string): string | undefined => {
+  /**
+   * A project module, or (`linked`) the source of a package linked into node_modules, such as a
+   * workspace package: TypeScript resolves it through node_modules, but its real path is project
+   * source outside node_modules.
+   */
+  const resolve = (specifier: string, from: string): { to?: string; linked?: string } => {
     const result = ts.resolveModuleName(specifier, from, options, host, cache).resolvedModule;
-    if (!result || result.isExternalLibraryImport) return undefined;
+    if (!result) return {};
     const resolved = path.resolve(result.resolvedFileName);
     if (resolved.includes(`${path.sep}node_modules${path.sep}`) || resolved.endsWith(".d.ts"))
-      return undefined;
-    return resolved;
+      return {};
+    if (!result.isExternalLibraryImport) return { to: resolved };
+    // Only when that source is also what runs: a package whose `main` is built output (with its
+    // own "use client" banner) but whose `types` point at source is judged by what runs.
+    return runtimeEntry(specifier, from) === resolved ? { linked: resolved } : {};
   };
 
   const edgesOf = (file: string, raw: RawImport[]): ModuleEdge[] =>
     raw.map((imp) => {
-      const to = resolve(imp.specifier, file);
+      const resolved = resolve(imp.specifier, file);
+      // A linked package's source counts as a project module once the graph has it (below).
+      const to =
+        resolved.to ??
+        (resolved.linked && graph.nodes.has(resolved.linked) ? resolved.linked : undefined);
       return {
         from: file,
         specifier: imp.specifier,
@@ -253,6 +296,7 @@ export function buildModuleGraph(
         to,
         external: to ? undefined : classifier.classify(imp.specifier, file),
         line: imp.line,
+        ...(resolved.linked && !to ? { linked: resolved.linked } : {}),
       };
     });
   // Size estimates parse the same island texts repeatedly; keep a bounded cache.
@@ -337,6 +381,16 @@ export function buildModuleGraph(
     }
   }
 
+  // Imports of linked packages whose source the program loaded: analyse that source like the
+  // project's own instead of classifying the package by its package.json.
+  for (const node of graph.nodes.values()) {
+    for (const edge of node.edges) {
+      if (!edge.linked || !graph.nodes.has(edge.linked)) continue;
+      edge.to = edge.linked;
+      edge.external = undefined;
+      delete edge.linked;
+    }
+  }
   graph.finalize();
   return graph;
 }

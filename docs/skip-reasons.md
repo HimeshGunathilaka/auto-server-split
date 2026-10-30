@@ -167,10 +167,23 @@ or an interactive element sits inside a callback other than `.map()`.
 
 ## `hoc`
 
-The component is wrapped in `memo`, `forwardRef` or another higher-order function.
+The component is wrapped in a higher-order function the tool can't unwrap safely.
+
+`memo()` and `forwardRef()` themselves are unwrapped: every importer of a split file is a Server
+Component that renders it as `<X />`, so it never re-renders on the client (where `memo` would
+matter) and never receives a ref (Server Components can't pass one). The server file keeps the
+plain function, typed with `forwardRef<T, P>`'s props type when the call typed it. A file is still
+skipped when:
+
+- the function inside `forwardRef()` uses its `ref` (it would have nothing to attach);
+- only the wrapper's type argument types the props (`memo<FC<Props>>((props) => ...)`): there is
+  no type to move onto the parameter;
+- `memo()` has a comparison function that isn't written inline (unwrapping would leave it unused);
+- a component declared elsewhere is wrapped in a `const` (`const Card = memo(Inner)`);
+- it's another higher-order function (`observer()`, `withRouter()`...).
 
 **To fix:** in React 19, `ref` is a regular prop, so `forwardRef` is usually unnecessary; `memo` has no
-effect on Server Components. Remove the wrapper if you can.
+effect on Server Components. Remove the wrapper, or type the props on the parameter.
 
 ## `server-env-difference`
 
@@ -228,17 +241,31 @@ or pass `--no-measure` to skip measuring altogether.
 `X.client.tsx` already exists (the tool never merges into an existing file), or the generated file could
 be picked up as a Next.js route (anything under `pages/`, an app-router `page`/`route` file for one
 of the configured `pageExtensions`, or a `next.config` whose `pageExtensions` can't be read statically).
+With [`outputExists: "alternate"`](configuration.md), the island goes into the first free one of
+`X.island.client.tsx`, `X.island2.client.tsx` and `X.island3.client.tsx` instead; the skip only
+happens when all of them exist.
 
-**To fix:** rename or remove the existing file, or set `clientFileSuffix` / `islandsDir`.
+**To fix:** set `outputExists: "alternate"`, rename or remove the existing file, or set
+`clientFileSuffix` / `islandsDir`.
 
 ## `unsupported-pattern`
 
 Valid code that this version can't split safely yet. The message says which pattern, for example:
 
 - statements in the component body other than `const` declarations, function declarations, hook
-  calls and early returns;
-- a `useEffect` (or other client-only code) that uses no island's state, so there is no island to
-  carry it (effects that sync an island's state move with that island);
+  calls and early returns. A `let` is supported when it's assigned only in the statements right
+  after it (`x = ...`, `x += ...`, or in `if`/`else if`/`else` branches that do nothing else): it's
+  then used like a `const`. A `var`, a `let` assigned later or in a callback, or a hook called
+  while computing it, still skips;
+- a `useEffect` (or other client-only code) that uses no island's state, in a component that
+  doesn't return one intrinsic element or fragment to add an island to. Effects that sync an
+  island's state move with that island; others move to an island that renders nothing, added as
+  the last child of the returned element. That needs a single `return` (an island in one branch
+  wouldn't run in the others), an element that can hold another child (not `<img>`, `<input>`,
+  `<textarea>`, `<html>`...), not a component element (`<Layout>`, whose `children` would change)
+  and no `dangerouslySetInnerHTML` on it. It's also refused when an island's effect is declared
+  after the statement that would move, because that effect would then run first. The message says
+  which;
 - an exported component, in a file with several components, that is entirely interactive (the
   message says which component; the whole file is skipped);
 - Next.js `error.tsx` / `global-error.tsx`, which must stay Client Components;

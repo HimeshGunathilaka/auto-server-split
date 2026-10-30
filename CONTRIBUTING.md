@@ -26,29 +26,37 @@ npx playwright install chromium   # only needed for the e2e tests
 
 ```
 src/
-  index.ts             public API: split(), defineConfig(), types
-  cli.ts               the auto-server-split command
+  index.ts             public API: split(), explain(), defineConfig(), types
+  cli.ts               the auto-server-split command (verify and compare are in cli/)
+  cli/                 git helpers, text output, --watch, the verify and compare subcommands
   interactive.ts       --interactive review
-  summary.ts           the CLI's closing summary
-  report.ts            --format markdown and github (annotations, job summary)
+  summary.ts           the CLI's closing summary and the run's numbers (RunSummary)
+  explain.ts           --explain: boundaries, import chains, per-component planning traces
+  graph.ts             --graph: client boundaries and "use client" barrels
+  check.ts             --check thresholds and budgets
+  workspace.ts         --workspace / --project: finding apps, prefixing their results
+  report/              markdown, github, sarif, gitlab, html, baselines, compare
   split.ts             per-run orchestration (project, graph, per-file pipeline)
   types.ts             public types
   config/              config file loading and validation
   project/             ts-morph project, module graph, package classification (all I/O)
-  analysis/            pure analysis: directives, components, taint, islands, serializability,
-                       skips, timezone warnings
-  frameworks/next.ts   everything Next.js-specific
+  analysis/            pure analysis: directives, components (memo/forwardRef unwrapping), taint,
+                       module safety per export, rules, islands, serializability, skips, warnings
+  frameworks/next.ts   everything Next.js-specific (route discovery included)
   transform/           rewrite and island emission (magic-string), Prettier
-  verify/              the self-check that runs before anything is reported or written
-  measure/             esbuild bundle-size estimate
+  verify/              the self-check that runs before anything is reported or written, and the
+                       commands `verify` runs
+  measure/             esbuild bundle-size estimate, routes, Next.js analyzer snapshots
   eslint/              ESLint plugin and the prefer-server-split rule
 test/
   fixtures/NN-name/    input/ plus output/ (exact expected files) or expected-skip.json
   eslint-project/      a small project used by the ESLint rule tests
   eslint-directive-project/  the same, with removeUnusedDirectives on (autofix tests)
   unit/                unit tests
-  *.test.ts            fixture runner, CLI, interactive mode, summary, config loading, importers,
-                       size measurement, line endings, ESLint rule, and ESLint/CLI parity
+  *.test.ts            fixture runner, CLI (cli-features: explain, graph, reports, budgets,
+                       compare, verify, workspaces, watch), interactive mode, summary, config,
+                       importers, size measurement, routes, module safety, rules, wrappers,
+                       workspaces, line endings, ESLint rule, and ESLint/CLI parity
 e2e/                   e2e harness and the Next.js apps it builds
 scripts/               perf and benchmark scripts
 action.yml             the GitHub Action (runs --check --format github)

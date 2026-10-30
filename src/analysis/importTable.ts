@@ -4,6 +4,7 @@ import type { ModuleGraph } from "../project/moduleGraph.js";
 import type { ExternalModuleInfo } from "../project/moduleTypes.js";
 import type { Directive } from "./directives.js";
 import type { BindingClass, FrameworkAdapter } from "./framework.js";
+import type { SafetyRules } from "./rules.js";
 
 export type ImportedModule =
   | { kind: "project"; file: string; directive: Directive | undefined }
@@ -55,6 +56,15 @@ const REACT_SPECIAL: Record<string, SpecialApi> = {
   forwardRef: "hoc",
   lazy: "lazy",
 };
+/** Package classifications a `rules.serverSafeExports` entry can override for one export. */
+const RULE_OVERRIDABLE = new Set([
+  "react-unknown",
+  "client-list",
+  "unresolved",
+  "neutral",
+  "server-safe-list",
+]);
+
 const REACT_DOM_NEUTRAL = new Set([
   "preload",
   "preinit",
@@ -131,7 +141,14 @@ export function buildImportTable(
   return table;
 }
 
-export type ProjectModuleSafety = (file: string) => { safe: boolean; reason?: string };
+/**
+ * Whether a project module (`exportName` given: one of its exports) can be used in a Server
+ * Component. Without `exportName` the whole module is checked.
+ */
+export type ProjectModuleSafety = (
+  file: string,
+  exportName?: string,
+) => { safe: boolean; reason?: string; clientReference?: boolean };
 
 /**
  * How using `binding` (optionally `binding.member`) behaves in code that will run as a Server
@@ -143,6 +160,7 @@ export function classifyImportUsage(
   asJsxTag: boolean,
   framework: FrameworkAdapter,
   projectSafety: ProjectModuleSafety,
+  rules?: SafetyRules,
 ): UsageClass {
   const name =
     binding.imported === "default" || binding.imported === "*"
@@ -162,7 +180,14 @@ export function classifyImportUsage(
     }
     if (mod.directive === "use server")
       return { cls: "server-action", reason: `${binding.local} is a Server Action` };
-    const safety = projectSafety(mod.file);
+    // `utils.format` through a namespace import names the export; a bare namespace uses them all.
+    const exportName = binding.imported === "*" ? member : binding.imported;
+    const safety = projectSafety(mod.file, exportName);
+    // A Client Component re-exported through a barrel: a client reference when rendered.
+    if (safety.clientReference)
+      return asJsxTag
+        ? { cls: "client-reference", reason: `${binding.local} is a Client Component from ${from}` }
+        : { cls: "client-only", reason: safety.reason ?? `${binding.local} is a Client Component` };
     return safety.safe
       ? { cls: "neutral", reason: `${from} is server-safe` }
       : {
@@ -172,6 +197,17 @@ export function classifyImportUsage(
   }
 
   const info = mod.info;
+  const ruled = rules?.exportRule(from, binding.imported === "*" ? member : binding.imported);
+  if (ruled === "client-only")
+    return {
+      cls: "client-only",
+      reason: `${name} from ${from} is client-only (rules.clientOnlyImports)`,
+    };
+  if (ruled === "server-safe" && RULE_OVERRIDABLE.has(info.kind))
+    return {
+      cls: "neutral",
+      reason: `${name} from ${from} is server-safe (rules.serverSafeExports)`,
+    };
   switch (info.kind) {
     case "react": {
       const special = REACT_SPECIAL[name];

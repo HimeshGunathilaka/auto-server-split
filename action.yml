@@ -43,6 +43,14 @@ runs:
         AUTO_SPLIT_ARGS: ${{ inputs.args }}
       run: |
         args=(--check --format github)
+        # The step reports through --format github (annotations, job summary); another format would
+        # replace it silently.
+        case " $AUTO_SPLIT_ARGS " in
+          *" --format"* | *" --json "* | *" --output"*)
+            echo "::error::The action reports with --format github, so args can't set --format, --json or --output. Run npx auto-server-split in a separate step for a SARIF, GitLab or HTML report."
+            exit 1
+            ;;
+        esac
         if [ -n "$AUTO_SPLIT_SINCE" ]; then args+=(--since "$AUTO_SPLIT_SINCE"); fi
         if [ -n "$AUTO_SPLIT_BASELINE" ]; then args+=(--baseline "$AUTO_SPLIT_BASELINE"); fi
         if [ -n "$AUTO_SPLIT_VERSION" ]; then

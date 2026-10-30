@@ -17,9 +17,15 @@
     "components/CommentBox.tsx",
     "components/SiteHeader.tsx",
     "components/Badge.tsx",
-    "components/NavLinks.tsx"
+    "components/NavLinks.tsx",
+    "components/SectionTracker.tsx",
+    "components/MemoStat.tsx",
+    "components/Field.tsx",
+    "components/ShareCard.tsx"
   ],
-  "expectDirectiveRemoved": ["components/ClientPanel.tsx"],
+  "expectDirectiveRemoved": [
+    "components/ClientPanel.tsx"
+  ],
   "expectSkip": {
     "components/Banner.tsx": "state-spans-component",
     "components/ThemeShell.tsx": "context-provider",
@@ -29,42 +35,116 @@
     {
       "path": "/",
       "steps": [
-        { "click": "button:has-text('♡')" },
-        { "click": "button:has-text('Bold')" },
-        { "click": "button:has-text('Clicked 0 times')" },
-        { "fill": ["input[placeholder=Filter]", "next"] },
-        { "click": "button:has-text('3 likes')" },
-        { "click": "button:has-text('Collapse article')" },
-        { "click": "button:has-text('Expand article')" },
-        { "click": "button:has-text('Theme: light')" }
+        {
+          "click": "button:has-text('\u2661')"
+        },
+        {
+          "click": "button:has-text('Bold')"
+        },
+        {
+          "click": "button:has-text('Clicked 0 times')"
+        },
+        {
+          "fill": [
+            "input[placeholder=Filter]",
+            "next"
+          ]
+        },
+        {
+          "click": "button:has-text('3 likes')"
+        },
+        {
+          "click": "button:has-text('Collapse article')"
+        },
+        {
+          "click": "button:has-text('Expand article')"
+        },
+        {
+          "click": "button:has-text('Theme: light')"
+        }
       ]
     },
     {
       "path": "/lists",
       "steps": [
-        { "click": "input[type=checkbox] >> nth=1" },
-        { "click": "button:has-text('Add · $12')" },
-        { "select": ["select", "best"] },
-        { "click": "button:has-text('Show answer')" },
-        { "click": "button:has-text('1 click')" }
+        {
+          "click": "input[type=checkbox] >> nth=1"
+        },
+        {
+          "click": "button:has-text('Add \u00b7 $12')"
+        },
+        {
+          "select": [
+            "select",
+            "best"
+          ]
+        },
+        {
+          "click": "button:has-text('Show answer')"
+        },
+        {
+          "click": "button:has-text('1 click')"
+        }
       ]
     },
     {
       "path": "/misc",
       "steps": [
-        { "click": "button:has-text('Card clicks: 0')" },
-        { "click": "button:has-text('1 × $4.50')" },
-        { "click": "button:has-text('Like (0)')" },
-        { "fill": ["textarea", "hello"] },
-        { "click": "button:has-text('Comment')" },
-        { "click": "button:has-text('new')" },
-        { "click": "button:has-text('Back to top')" },
-        { "click": "button:has-text('About')", "waitForURL": "**/about" }
+        {
+          "click": "button:has-text('Card clicks: 0')"
+        },
+        {
+          "click": "button:has-text('1 \u00d7 $4.50')"
+        },
+        {
+          "click": "button:has-text('Like (0)')"
+        },
+        {
+          "fill": [
+            "textarea",
+            "hello"
+          ]
+        },
+        {
+          "click": "button:has-text('Comment')"
+        },
+        {
+          "click": "button:has-text('new')"
+        },
+        {
+          "click": "button:has-text('Back to top')"
+        },
+        {
+          "click": "button:has-text('About')",
+          "waitForURL": "**/about"
+        }
       ]
     },
     {
       "path": "/about",
-      "steps": [{ "click": "a.nav-link:has-text('Lists')", "waitForURL": "**/lists" }]
+      "steps": [
+        {
+          "click": "a.nav-link:has-text('Lists')",
+          "waitForURL": "**/lists"
+        }
+      ]
+    },
+    {
+      "path": "/extra",
+      "steps": [
+        {
+          "click": "button:has-text('Show details')"
+        },
+        {
+          "fill": [
+            "input[aria-label=name]",
+            "Ada"
+          ]
+        },
+        {
+          "click": "button:has-text('Share')"
+        }
+      ]
     }
   ]
 }

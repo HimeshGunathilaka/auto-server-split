@@ -13,7 +13,15 @@ function run(args: string[], cwd = dir, env: Record<string, string> = {}) {
   const r = spawnSync(process.execPath, [cli, ...args], {
     cwd,
     encoding: "utf8",
-    env: { ...process.env, NO_COLOR: "1", GITHUB_STEP_SUMMARY: "", ...env },
+    // Unset what CI sets: report paths are relative to GITHUB_WORKSPACE / CI_PROJECT_DIR.
+    env: {
+      ...process.env,
+      NO_COLOR: "1",
+      GITHUB_STEP_SUMMARY: "",
+      GITHUB_WORKSPACE: "",
+      CI_PROJECT_DIR: "",
+      ...env,
+    },
   });
   return { code: r.status, stdout: r.stdout, stderr: r.stderr };
 }
@@ -131,7 +139,7 @@ describe("CLI", () => {
       expect(r.code).toBe(1);
       // Rejected for the combination, before it even asks for a terminal.
       expect(r.stderr).toContain(
-        "--interactive can't be combined with --dry-run, --check, --json or --format markdown",
+        "--interactive can't be combined with --dry-run, --check, --json or a report --format",
       );
     }
     expect(existsSync(path.join(dir, "PostCard.client.tsx"))).toBe(false);
@@ -221,10 +229,19 @@ describe("CLI", () => {
   it("--write-baseline records the available changes, and --baseline leaves them alone", () => {
     freshCopy(false);
     const written = run([".", "--no-measure", "--write-baseline", "base.json"]);
-    expect(written.stdout).toContain("Wrote 1 file to base.json");
+    expect(written.stdout).toContain('Wrote 1 file (1 "use client" file) to base.json');
     expect(JSON.parse(readFileSync(path.join(dir, "base.json"), "utf8"))).toEqual({
+      version: 2,
       files: ["PostCard.tsx"],
+      entries: [{ file: "PostCard.tsx", status: "split", fingerprint: expect.any(String) }],
+      boundaries: ["PostCard.tsx"],
+      // Each boundary's code without imports, to recognise it after a move or rename.
+      prints: { "PostCard.tsx": expect.stringMatching(/^[0-9a-f]{16}$/) },
+      totals: { changes: 1, boundaries: 1 },
     });
+    // A version 1 baseline still works.
+    writeFileSync(path.join(dir, "v1.json"), '{ "files": ["PostCard.tsx"] }');
+    expect(run([".", "--check", "--no-measure", "--baseline", "v1.json"]).code).toBe(0);
     expect(run([".", "--check", "--no-measure", "--baseline", "base.json"]).code).toBe(0);
     expect(run([".", "--check", "--no-measure"]).code).toBe(2);
     writeFileSync(path.join(dir, "bad.json"), '{ "files": "PostCard.tsx" }');
@@ -259,7 +276,7 @@ describe("CLI", () => {
     );
     expect(r.stdout).toContain("files scanned:");
     expect(readFileSync(summary, "utf8")).toContain("## auto-server-split");
-    expect(run([".", "--format", "yaml"]).stderr).toContain("--format must be text, json");
+    expect(run([".", "--format", "yaml"]).stderr).toContain("--format must be one of text, json");
     const both = run([".", "--json", "--format", "markdown"]);
     expect(both.code).toBe(1);
     expect(both.stderr).toContain("--json is --format json");

@@ -1,6 +1,5 @@
 import { ts } from "ts-morph";
 import type { ComponentInfo, FileShape, ModuleDecl } from "./components.js";
-import { componentDeclarationNode } from "./components.js";
 import type { AnalysisContext } from "./context.js";
 import { locOf } from "./context.js";
 import { hasUseServerBody } from "./directives.js";
@@ -39,7 +38,18 @@ export type Unit = {
   client: boolean;
   /** For early returns: the returned expression. */
   returned?: ts.Expression;
+  /**
+   * For a `let`: the statements right after it that only assign the variable (`x = ...`, or in
+   * `if`/`else` branches). The variable isn't assigned anywhere else, so after them it behaves like
+   * a `const`; the unit is the declaration and these together.
+   */
+  extra?: ts.Statement[];
 };
+
+/** A unit's statements: its node, then (for a `let`) the assignments that complete it. */
+export function unitNodes(unit: Unit): ts.Statement[] {
+  return unit.extra ? [unit.node, ...unit.extra] : [unit.node];
+}
 
 export type JNode = {
   id: number;
@@ -95,6 +105,12 @@ export type IslandPlan = {
    */
   slots: { j: JNode; name: string }[];
   line: number;
+  /**
+   * An island that renders nothing and only runs client statements no element uses (an effect
+   * that syncs `document.title`). It is rendered as the last child of `root`, the component's
+   * returned element, instead of replacing it.
+   */
+  effects?: boolean;
 };
 
 export type ComponentPlan = {
@@ -110,6 +126,48 @@ export type ComponentPlan = {
 
 /** React hooks whose result is the same for every caller under the same provider. */
 const REACT_SHARED_CONTEXT_HOOKS = ["useContext", "use"];
+
+/** React hooks that never schedule effects (anything else, custom hooks included, might). */
+const NO_EFFECT_HOOKS = new Set([
+  "useState",
+  "useReducer",
+  "useRef",
+  "useMemo",
+  "useCallback",
+  "useContext",
+  "useId",
+  "useDeferredValue",
+  "useTransition",
+  "useDebugValue",
+  "use",
+]);
+
+/** Elements an island that renders nothing can't be added to (no children, or text-only ones). */
+const NO_EXTRA_CHILD_TAGS = new Set([
+  "html",
+  "head",
+  "title",
+  "style",
+  "script",
+  "noscript",
+  "template",
+  "textarea",
+  "option",
+  "iframe",
+  "area",
+  "base",
+  "br",
+  "col",
+  "embed",
+  "hr",
+  "img",
+  "input",
+  "link",
+  "meta",
+  "source",
+  "track",
+  "wbr",
+]);
 
 class UnionFind {
   private parent = new Map<number, number>();
@@ -174,7 +232,18 @@ export function islandBaseName(componentName: string, rootTag: string): string {
  * Plans the split of one component: which JSX subtrees become islands, which statements move with
  * them, and which values cross the boundary as props.
  */
+/**
+ * Why a component's islands have the shape they have (`--explain`): the elements that use
+ * client-only code and what they use, then each grouping decision, in order.
+ */
+export type PlanTrace = {
+  anchors: { element: string; line: number; reasons: string[] }[];
+  steps: string[];
+};
+
 type PlanOptions = {
+  /** Filled in with the planning decisions when given. */
+  trace?: PlanTrace;
   /** Component props that every importer passes a Server Action for (see checkImporters). */
   serverActionProps?: ReadonlySet<string>;
   /** Other components of the file that move wholesale into the island file (client references). */
@@ -192,7 +261,9 @@ export function planComponent(
   const fn = component.fn;
   const body = fn.body;
   if (!body) return skip("unsupported-pattern", `${component.name} has no body`, locOf(ctx, fn));
-  if (fn.parameters.length > 1) {
+  // An unwrapped forwardRef() function's unused `ref` parameter is dropped from the server file.
+  const params = fn.parameters.filter((p) => p !== component.droppedRef);
+  if (params.length > 1) {
     return skip(
       "unsupported-pattern",
       `${component.name} takes more than one parameter`,
@@ -203,7 +274,7 @@ export function planComponent(
   // ---- parameters ---------------------------------------------------------------------------
   const paramSymbols = new Set<ts.Symbol>();
   const serverActionParams = new Set<ts.Symbol>();
-  for (const param of fn.parameters) {
+  for (const param of params) {
     for (const id of bindingIdentifiers(param.name)) {
       const symbol = checker.getSymbolAtLocation(id);
       if (symbol) paramSymbols.add(symbol);
@@ -285,11 +356,15 @@ export function planComponent(
       }
       if (ts.isVariableStatement(statement)) {
         if (!(statement.declarationList.flags & ts.NodeFlags.Const)) {
-          return skip(
-            "unsupported-pattern",
-            "declares a `let`/`var` in the component body",
-            locOf(ctx, statement),
-          );
+          const group = letGroup(checker, statement, statements.slice(i + 1), body);
+          if (typeof group === "string")
+            return skip("unsupported-pattern", group, locOf(ctx, statement));
+          const unit = newUnit(statement, "var");
+          if (group.extra.length > 0) unit.extra = group.extra;
+          unit.declares.add(group.symbol);
+          symbolToUnit.set(group.symbol, unit);
+          i += group.extra.length;
+          continue;
         }
         const unit = newUnit(statement, "var");
         for (const decl of statement.declarationList.declarations) {
@@ -365,7 +440,7 @@ export function planComponent(
         const top = topLevelStatement(declaration);
         if (top && componentStatements.has(top)) {
           const target = shape.components.find((c) => c.statement === top);
-          if (target && componentDeclarationNode(target) === declaration)
+          if (target?.declarations.includes(declaration))
             return { kind: "component", symbol, component: target };
           // A name declared inside another component of the file (its params, locals).
           return { kind: "inner", symbol, declaration };
@@ -406,24 +481,33 @@ export function planComponent(
   for (const unit of units) {
     if (unit.kind === "early-return") seenEarlyReturn = true;
     const scanned =
-      unit.kind === "early-return" ? (unit.node as ts.IfStatement).expression : unit.node;
-    unit.markers = facts.scanMarkers(scanned);
-    forEachValueRef(scanned, (id) => {
-      const origin = originOf(id);
-      if (origin.kind === "local" && origin.unit !== unit) unit.localDeps.add(origin.unit);
-      if (origin.kind === "module") unit.moduleDeps.add(origin.decl);
-      if (origin.kind === "component")
-        unit.markers.push({
-          kind: "client-import",
-          node: id,
-          detail:
-            origin.component === component
-              ? "recursive component reference"
-              : `component ${id.text} used as a value`,
-        });
-    });
+      unit.kind === "early-return" ? [(unit.node as ts.IfStatement).expression] : unitNodes(unit);
+    unit.markers = scanned.flatMap((node) => facts.scanMarkers(node));
+    for (const node of scanned) {
+      forEachValueRef(node, (id) => {
+        const origin = originOf(id);
+        if (origin.kind === "local" && origin.unit !== unit) unit.localDeps.add(origin.unit);
+        if (origin.kind === "module") unit.moduleDeps.add(origin.decl);
+        if (origin.kind === "component")
+          unit.markers.push({
+            kind: "client-import",
+            node: id,
+            detail:
+              origin.component === component
+                ? "recursive component reference"
+                : `component ${id.text} used as a value`,
+          });
+      });
+    }
     for (const marker of unit.markers) {
       if (marker.kind !== "hook") continue;
+      if (unit.extra?.some((s) => containsRange(s, marker.node))) {
+        return skip(
+          "conditional-hooks-or-returns",
+          `calls ${marker.detail} while computing a \`let\`, possibly conditionally`,
+          locOf(ctx, marker.node),
+        );
+      }
       if (unit.kind === "early-return") {
         return skip(
           "conditional-hooks-or-returns",
@@ -752,25 +836,75 @@ export function planComponent(
 
   const clientUnits = units.filter((u) => u.client);
   const totalJsx = jnodes.length;
-  /** A client statement (typically an effect) that no island would carry. */
-  const unconnected = (unit: Unit) =>
+  /** A client statement (typically an effect) that no island would carry, and why. */
+  const unconnected = (unit: Unit, why: string) =>
     skip(
       "unsupported-pattern",
-      `client-only code at line ${locOf(ctx, unit.node).line} isn't connected to any rendered element; moving it would change when it runs`,
+      `client-only code at line ${locOf(ctx, unit.node).line} isn't connected to any rendered element, and ${why}; moving it would change when it runs`,
       locOf(ctx, unit.node),
     );
 
-  if (anchors.length === 0) {
-    if (clientUnits.length === 0 && clientModuleDecls.size === 0) {
+  if (anchors.length === 0 && clientUnits.length === 0) {
+    if (clientModuleDecls.size === 0) {
       return skip(
         "no-islands",
         `${component.name} uses no client-only features; removing "use client" may be enough (set removeUnusedDirectives to let the tool remove it)`,
       );
     }
-    const first = clientUnits[0];
-    return first
-      ? unconnected(first)
-      : skip("unsupported-pattern", "client-only helpers aren't connected to any rendered element");
+    return skip(
+      "unsupported-pattern",
+      "client-only helpers aren't connected to any rendered element",
+    );
+  }
+
+  /**
+   * Where an island that only runs effects can go: the last child of the one element the component
+   * returns. A component's effects run after its children's, and the last child's after its
+   * siblings', so the effect keeps its place relative to everything the component renders. With
+   * several returns it would have to be in every branch; a component element (`<Layout>`) would
+   * get a different `children`; some elements can't hold children at all.
+   */
+  const effectsHost = (): JNode | string => {
+    const [only, ...more] = renderRoots;
+    if (more.length > 0) return "the component has more than one return";
+    const host = only ? jnodeOf.get(only) : undefined;
+    if (!host || !only) return "the component doesn't return a single element";
+    if (ts.isJsxSelfClosingElement(host.node))
+      return `the returned <${tagNameText(sf, host.node)} /> has no children to add to`;
+    if (ts.isJsxElement(host.node)) {
+      const opening = host.node.openingElement;
+      const tag = tagNameText(sf, host.node);
+      if (!isIntrinsicTagName(opening.tagName))
+        return `the returned element is the component <${tag}>, whose children would change`;
+      if (NO_EXTRA_CHILD_TAGS.has(tag)) return `the returned <${tag}> can't hold another child`;
+      const innerHtml = opening.attributes.properties.some(
+        (p) => ts.isJsxAttribute(p) && p.name.getText(sf) === "dangerouslySetInnerHTML",
+      );
+      if (innerHtml) return `the returned <${tag}> sets dangerouslySetInnerHTML`;
+    }
+    return host;
+  };
+
+  const trace = options.trace;
+  const note = (step: string) => {
+    if (trace && !trace.steps.includes(step)) trace.steps.push(step);
+  };
+  /** `<button> (line 12)` */
+  const el = (j: JNode) => `<${tagNameText(sf, j.node)}> (line ${locOf(ctx, j.node).line})`;
+  /** `` `open`, `setOpen` (line 5) `` or `useEffect() at line 7` */
+  const unitDesc = (u: Unit): string => {
+    const line = locOf(ctx, u.node).line;
+    const names = [...u.declares].map((s) => `\`${s.getName()}\``);
+    if (names.length > 0) return `${names.join(", ")} (line ${line})`;
+    const hook = u.markers.find((m) => m.kind === "hook");
+    return `${hook ? hook.detail : "the statement"} at line ${line}`;
+  };
+  for (const anchor of anchors) {
+    trace?.anchors.push({
+      element: `<${tagNameText(sf, anchor.j.node)}>`,
+      line: locOf(ctx, anchor.j.node).line,
+      reasons: [...new Set(anchor.reasons)],
+    });
   }
 
   const uf = new UnionFind();
@@ -780,12 +914,20 @@ export function planComponent(
       if (!unit.client) continue;
       const owner = unitOwner.get(unit);
       if (owner === undefined) unitOwner.set(unit, i);
-      else uf.union(owner, i);
+      else {
+        const other = anchors[owner];
+        if (other && uf.find(owner) !== uf.find(i))
+          note(`${el(other.j)} and ${el(anchor.j)} share ${unitDesc(unit)}, so they're one island`);
+        uf.union(owner, i);
+      }
     }
   });
 
-  /** `extra`: client statements no element reads directly (effects...) attached to this island. */
-  type Group = { anchors: Anchor[]; root: JNode; extra: Set<Unit> };
+  /**
+   * `extra`: client statements no element reads directly (effects...) attached to this island.
+   * `effects`: the island renders nothing and only runs `extra` (see effectsHost).
+   */
+  type Group = { anchors: Anchor[]; root: JNode; extra: Set<Unit>; effects?: boolean };
   const groupsByRoot = new Map<number, Anchor[]>();
   anchors.forEach((anchor, i) => {
     const key = uf.find(i);
@@ -821,6 +963,9 @@ export function planComponent(
             locOf(ctx, current.node),
           );
         }
+        note(
+          `${el(current)} is rendered by .map() and the island uses component state, so the island is ${el(container)} around the list instead of one per item`,
+        );
         root = container;
       }
       current = current.parent;
@@ -853,6 +998,10 @@ export function planComponent(
     }
     const mapped = mappedRoot(lca, !hasComponentHooks(groupAnchors));
     if (!mapped.ok) return mapped;
+    if (groupAnchors.length > 1)
+      note(
+        `the island is ${el(mapped.value)}, the closest element around ${groupAnchors.map((a) => el(a.j)).join(", ")}`,
+      );
     groups.push({ anchors: groupAnchors, root: mapped.value, extra: new Set() });
   }
 
@@ -875,6 +1024,7 @@ export function planComponent(
   const groupHasHooks = (g: Group): boolean =>
     hasComponentHooks(g.anchors) || [...unitClosure(g.extra)].some(unitHasOwnHooks);
   const unitsOfGroup = (group: Group): Set<Unit> => {
+    if (group.effects) return unitClosure(group.extra);
     const refs: ts.Identifier[] = [];
     forEachValueRef(group.root.node, (id) => refs.push(id));
     const units = closureOf(refs);
@@ -906,12 +1056,18 @@ export function planComponent(
         const merged = [...owners.flatMap((g) => g.anchors)];
         const mapped = mappedRoot(lca, !owners.some(groupHasHooks));
         if (!mapped.ok) return mapped;
+        note(
+          `${unitDesc(unit)} uses the state of the islands ${owners.map((g) => el(g.root)).join(", ")}, so they merge at ${el(mapped.value)}`,
+        );
         first.anchors = merged;
         first.root = mapped.value;
         for (const other of rest) other.extra.forEach((u) => first.extra.add(u));
         groups = groups.filter((g) => !rest.includes(g));
       }
       first.extra.add(unit);
+      note(
+        `${unitDesc(unit)} isn't read by any element but uses the state of the island ${el(first.root)}, so it moves with it`,
+      );
       if (unitHasOwnHooks(unit)) {
         // An effect must run once, not once per list item: keep the island out of any .map.
         const hoisted = mappedRoot(first.root, false);
@@ -931,6 +1087,7 @@ export function planComponent(
       for (const b of groups) {
         if (a === b) continue;
         if (isAncestorOrSelf(a.root, b.root)) {
+          note(`${el(b.root)} is inside the island ${el(a.root)}, so they're one island`);
           a.anchors.push(...b.anchors);
           b.extra.forEach((u) => a.extra.add(u));
           groups = groups.filter((g) => g !== b);
@@ -956,6 +1113,9 @@ export function planComponent(
             );
           const mapped = mappedRoot(lca, !(groupHasHooks(other) || groupHasHooks(group)));
           if (!mapped.ok) return mapped;
+          note(
+            `the islands ${el(other.root)} and ${el(group.root)} both use ${unitDesc(unit)}, so they merge at ${el(mapped.value)}`,
+          );
           other.anchors.push(...group.anchors);
           group.extra.forEach((u) => other.extra.add(u));
           other.root = mapped.value;
@@ -984,7 +1144,7 @@ export function planComponent(
           escape = { node: id, j: enclosingJNode(id, jnodeOf) };
         });
       for (const root of renderRoots) check(root);
-      for (const unit of units) if (!islandUnits.has(unit)) check(unit.node);
+      for (const unit of units) if (!islandUnits.has(unit)) unitNodes(unit).forEach(check);
       if (escape) {
         if (!escape.j) {
           return skip(
@@ -1002,6 +1162,9 @@ export function planComponent(
           );
         const mapped = mappedRoot(lca, !groupHasHooks(group));
         if (!mapped.ok) return mapped;
+        note(
+          `\`${escape.node.text}\` is read at line ${locOf(ctx, escape.node).line}, outside the island ${el(group.root)}, so the island grows to ${el(mapped.value)}`,
+        );
         group.root = mapped.value;
         changed = true;
         break;
@@ -1028,13 +1191,39 @@ export function planComponent(
     }
   }
 
-  // Every client statement must belong to exactly one island.
+  // Every client statement must belong to exactly one island. Ones that no element uses and no
+  // island owns move into an island that only runs them.
   const assigned = new Map<Unit, Group>();
   for (const group of groups)
     for (const unit of unitsOfGroup(group)) if (unit.client) assigned.set(unit, group);
-  for (const unit of clientUnits) {
-    if (unit.kind === "early-return") continue;
-    if (!assigned.has(unit)) return unconnected(unit);
+  const orphans = clientUnits.filter((u) => u.kind !== "early-return" && !assigned.has(u));
+  const [firstOrphan] = orphans;
+  if (firstOrphan) {
+    const host = effectsHost();
+    if (typeof host === "string") return unconnected(firstOrphan, host);
+    // The effects island renders after every other island, so its effects run after theirs. That
+    // was the order only if no island's effect was declared after the statements that move.
+    const firstIndex = Math.min(...orphans.map((u) => u.index));
+    for (const group of groups) {
+      for (const unit of unitsOfGroup(group)) {
+        if (unit.index < firstIndex) continue;
+        const effect = unit.markers.find(
+          (m) =>
+            m.kind === "hook" &&
+            !NO_EFFECT_HOOKS.has(m.detail.replace(/\(\)$/, "")) &&
+            !sharedContextHooks.has(m.detail.replace(/\(\)$/, "")),
+        );
+        if (effect)
+          return unconnected(
+            firstOrphan,
+            `${effect.detail} at line ${locOf(ctx, effect.node).line} (in the island ${el(group.root)}) is declared after it, so its effects would run first`,
+          );
+      }
+    }
+    note(
+      `${orphans.map(unitDesc).join(", ")} ${orphans.length === 1 ? "isn't" : "aren't"} used by any element or island, so ${orphans.length === 1 ? "it moves" : "they move"} to an island that renders nothing, added as the last child of ${el(host)}`,
+    );
+    groups.push({ anchors: [], root: host, extra: new Set(orphans), effects: true });
   }
 
   // ---- build island plans: statements, props, imports ----------------------------------------------
@@ -1048,7 +1237,7 @@ export function planComponent(
     const known = constantUnits.get(unit);
     if (known !== undefined) return known;
     constantUnits.set(unit, false);
-    if (unit.kind !== "var" || unit.client) return false;
+    if (unit.kind !== "var" || unit.client || unit.extra) return false;
     let constant = true;
     const visit = (n: ts.Node): void => {
       if (!constant || isTypeSyntax(n)) return;
@@ -1091,7 +1280,9 @@ export function planComponent(
     return constant;
   };
 
-  groups.sort((a, b) => a.root.node.getStart(sf) - b.root.node.getStart(sf));
+  // In source order; the effects island goes last, where it's rendered.
+  const groupPos = (g: Group) => (g.effects ? g.root.node.getEnd() : g.root.node.getStart(sf));
+  groups.sort((a, b) => groupPos(a) - groupPos(b));
   const islands: IslandPlan[] = [];
   const copiedUnits = new Set<Unit>();
 
@@ -1168,14 +1359,18 @@ export function planComponent(
 
   for (const group of groups) {
     const rootNode = group.root.node;
-    const rootTag = tagNameText(sf, rootNode);
+    const rootTag = group.effects ? "effects" : tagNameText(sf, rootNode);
     const islandUnits = new Set<Unit>([...unitsOfGroup(group)].filter((u) => u.client));
     const props = new Map<string, PropInfo>();
     const valueImports = new Set<ImportBinding>();
     const moduleDecls = new Set<ModuleDecl>();
     let keyAttr: ts.JsxAttribute | undefined;
 
-    if (!ts.isJsxFragment(rootNode) && group.root.fnBetween.some((f) => mapCallOf(f))) {
+    if (
+      !group.effects &&
+      !ts.isJsxFragment(rootNode) &&
+      group.root.fnBetween.some((f) => mapCallOf(f))
+    ) {
       const attrs = ts.isJsxElement(rootNode)
         ? rootNode.openingElement.attributes
         : rootNode.attributes;
@@ -1184,16 +1379,19 @@ export function planComponent(
       );
     }
 
-    const slotNodes = findSlots(group.root);
+    const slotNodes = group.effects ? [] : findSlots(group.root);
+    /** The JSX the island renders (none for an effects island). */
+    const rendered: ts.Node[] = group.effects ? [] : [rootNode];
     const inSlot = (node: ts.Node): boolean =>
       slotNodes.some((slot) => containsRange(slot.node, node));
     const inIsland = (node: ts.Node): boolean =>
-      (containsRange(rootNode, node) &&
+      (!group.effects &&
+        containsRange(rootNode, node) &&
         !(keyAttr && containsRange(keyAttr, node)) &&
         !inSlot(node)) ||
-      [...islandUnits].some((u) => containsRange(u.node, node));
+      [...islandUnits].some((u) => unitNodes(u).some((n) => containsRange(n, node)));
 
-    const pending: ts.Node[] = [rootNode, ...[...islandUnits].map((u) => u.node)];
+    const pending: ts.Node[] = [...rendered, ...[...islandUnits].flatMap(unitNodes)];
     const visitedNodes = new Set<ts.Node>();
     const moduleLevelScopes = new Set<ts.Node>();
     const addProp = (id: ts.Identifier, symbol: ts.Symbol): Skip | undefined => {
@@ -1256,7 +1454,7 @@ export function planComponent(
             if (needsCopy) {
               islandUnits.add(unit);
               copiedUnits.add(unit);
-              pending.push(unit.node);
+              pending.push(...unitNodes(unit));
             } else {
               failure = addProp(id, origin.symbol);
             }
@@ -1339,7 +1537,7 @@ export function planComponent(
     /** References to a prop inside the island (not in its `key` or in server-rendered slots). */
     const islandRefs = (prop: PropInfo): ts.Identifier[] => {
       const refs: ts.Identifier[] = [];
-      for (const scope of [rootNode, ...[...islandUnits].map((u) => u.node)]) {
+      for (const scope of [...rendered, ...[...islandUnits].flatMap(unitNodes)]) {
         forEachValueRef(scope, (id) => {
           if ((keyAttr && containsRange(keyAttr, id)) || inSlot(id)) return;
           if (symbolOfRef(checker, id) === prop.symbol) refs.push(id);
@@ -1421,30 +1619,44 @@ export function planComponent(
         );
     }
 
+    const sortedUnits = [...islandUnits].sort((a, b) => a.index - b.index);
+    const slots = slotNodes.map((j, i) => ({
+      j,
+      name: slotNodes.length === 1 && !props.has("children") ? "children" : `slot${i + 1}`,
+    }));
+    const label = group.effects ? "the effects island" : `the island ${el(group.root)}`;
+    for (const slot of slots)
+      note(
+        `${el(slot.j)} inside ${label} is static, so it renders on the server and is passed in as \`${slot.name}\``,
+      );
+    const crossing = [...props.values()].map((p) =>
+      p.picked
+        ? `\`${p.name}={${p.picked.serverExpr}}\` (only the fields it reads)`
+        : `\`${p.name}\``,
+    );
+    if (crossing.length > 0) note(`${label} receives ${crossing.join(", ")} from the server`);
     islands.push({
       name: "",
       root: group.root,
       rootTag,
       keyAttr,
-      units: [...islandUnits].sort((a, b) => a.index - b.index),
+      units: sortedUnits,
       props: [...props.values()].sort(
         (a, b) =>
           declarationPos(a.symbol) - declarationPos(b.symbol) || a.name.localeCompare(b.name),
       ),
       valueImports,
       moduleDecls,
-      slots: slotNodes.map((j, i) => ({
-        j,
-        name: slotNodes.length === 1 && !props.has("children") ? "children" : `slot${i + 1}`,
-      })),
-      line: locOf(ctx, rootNode).line,
+      slots,
+      line: locOf(ctx, group.effects ? (sortedUnits[0]?.node ?? rootNode) : rootNode).line,
+      ...(group.effects ? { effects: true } : {}),
     });
   }
 
   // ---- which statements leave the server component ---------------------------------------------------
   const removedUnits = new Set<Unit>(clientUnits.filter((u) => u.kind !== "early-return"));
   // Copied (non-client) statements stay only if server code still reads them.
-  const islandRanges = islands.map((i) => i.root.node);
+  const islandRanges = islands.filter((i) => !i.effects).map((i) => i.root.node);
   const slotRanges = islands.flatMap((i) => i.slots.map((slot) => slot.j.node));
   const inAnySlot = (node: ts.Node): boolean => slotRanges.some((r) => containsRange(r, node));
   const serverReads = (unit: Unit): boolean => {
@@ -1458,7 +1670,8 @@ export function planComponent(
       });
     for (const root of renderRoots) scan(root);
     for (const cond of earlyReturnConditions) scan(cond);
-    for (const other of units) if (other !== unit && !removedUnits.has(other)) scan(other.node);
+    for (const other of units)
+      if (other !== unit && !removedUnits.has(other)) unitNodes(other).forEach(scan);
     // Props are evaluated on the server.
     for (const island of islands)
       for (const prop of island.props) if (unit.declares.has(prop.symbol)) read = true;
@@ -1481,7 +1694,7 @@ export function planComponent(
 
   const staticCount = jnodes.filter(
     (j) =>
-      !islands.some((i) => isAncestorOrSelf(i.root, j)) ||
+      !islands.some((i) => !i.effects && isAncestorOrSelf(i.root, j)) ||
       islands.some((i) => i.slots.some((slot) => isAncestorOrSelf(slot.j, j))),
   ).length;
   return ok({
@@ -1492,6 +1705,107 @@ export function planComponent(
     staticRatio: totalJsx === 0 ? 0 : staticCount / totalJsx,
     jsxTotal: totalJsx,
   });
+}
+
+/**
+ * A `let` in a component body and the statements right after it that only assign it: `x = ...`
+ * (any assignment operator), or `if`/`else` branches that do nothing else. Together they compute a
+ * value that never changes afterwards, so the variable is used like a `const`. Returns why not
+ * otherwise: `var`, several variables or a destructuring pattern, or an assignment anywhere else
+ * (a later statement, a callback).
+ */
+function letGroup(
+  checker: ts.TypeChecker,
+  statement: ts.VariableStatement,
+  following: readonly ts.Statement[],
+  body: ts.Block,
+): { symbol: ts.Symbol; extra: ts.Statement[] } | string {
+  const sf = statement.getSourceFile();
+  const list = statement.declarationList;
+  if (!(list.flags & ts.NodeFlags.Let)) return "declares a `var` in the component body";
+  const [decl, ...more] = list.declarations;
+  if (!decl || more.length > 0 || !ts.isIdentifier(decl.name))
+    return "declares a `let` other than a single variable in the component body";
+  const name = decl.name;
+  const symbol = checker.getSymbolAtLocation(name);
+  if (!symbol) return "declares a `let` the type checker can't resolve";
+  const isTarget = (e: ts.Expression) =>
+    ts.isIdentifier(e) && checker.getSymbolAtLocation(e) === symbol;
+  const assignsOnly = (s: ts.Statement): boolean => {
+    if (ts.isExpressionStatement(s)) {
+      const e = stripParens(s.expression);
+      return (
+        ts.isBinaryExpression(e) &&
+        e.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+        e.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
+        isTarget(e.left)
+      );
+    }
+    if (ts.isBlock(s)) return s.statements.length > 0 && s.statements.every(assignsOnly);
+    if (ts.isIfStatement(s))
+      return assignsOnly(s.thenStatement) && (!s.elseStatement || assignsOnly(s.elseStatement));
+    return false;
+  };
+  const extra: ts.Statement[] = [];
+  for (const s of following) {
+    if (!assignsOnly(s)) break;
+    extra.push(s);
+  }
+  // Any other write (a later statement, a handler, a nested function, a destructuring
+  // assignment, a for-of) means it isn't a value.
+  let elsewhere: ts.Node | undefined;
+  const visit = (n: ts.Node): void => {
+    if (elsewhere || extra.includes(n as ts.Statement)) return;
+    if (ts.isIdentifier(n) && symbolOfRef(checker, n) === symbol && isWriteTarget(n)) {
+      elsewhere = n;
+      return;
+    }
+    ts.forEachChild(n, visit);
+  };
+  for (const s of body.statements) if (s !== statement) visit(s);
+  if (elsewhere) {
+    const line = sf.getLineAndCharacterOfPosition(elsewhere.getStart(sf)).line + 1;
+    return `\`${name.text}\` is assigned at line ${line}; a \`let\` is supported when it's only assigned right after its declaration`;
+  }
+  return { symbol, extra };
+}
+
+/**
+ * Whether an identifier is written: the target of an assignment (also inside a destructuring
+ * pattern, a cast or parentheses), of `++`/`--`, or the variable of a `for...in`/`for...of`.
+ */
+function isWriteTarget(id: ts.Identifier): boolean {
+  let node: ts.Node = id;
+  for (let parent = node.parent; parent; node = parent, parent = parent.parent) {
+    const passThrough =
+      ts.isParenthesizedExpression(parent) ||
+      ts.isAsExpression(parent) ||
+      ts.isNonNullExpression(parent) ||
+      ts.isTypeAssertionExpression(parent) ||
+      ts.isSatisfiesExpression(parent) ||
+      ts.isArrayLiteralExpression(parent) ||
+      ts.isObjectLiteralExpression(parent) ||
+      ts.isSpreadElement(parent) ||
+      ts.isSpreadAssignment(parent) ||
+      (ts.isPropertyAssignment(parent) && parent.initializer === node) ||
+      (ts.isShorthandPropertyAssignment(parent) && parent.name === node);
+    if (passThrough) continue;
+    if (ts.isBinaryExpression(parent))
+      return (
+        parent.left === node &&
+        parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+        parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+      );
+    if (ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent))
+      return (
+        parent.operator === ts.SyntaxKind.PlusPlusToken ||
+        parent.operator === ts.SyntaxKind.MinusMinusToken
+      );
+    return (
+      (ts.isForInStatement(parent) || ts.isForOfStatement(parent)) && parent.initializer === node
+    );
+  }
+  return false;
 }
 
 function declarationPos(symbol: ts.Symbol): number {

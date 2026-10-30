@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { realpathSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
 import type { BuildOptions, Message, Metafile } from "esbuild";
@@ -17,6 +17,8 @@ export type SplitCandidate = {
   file: string;
   originalText: string;
   island?: { file: string; text: string };
+  /** The file's text after the change (route estimates follow its imports). */
+  serverText?: string;
 };
 
 /**
@@ -25,7 +27,7 @@ export type SplitCandidate = {
  */
 export type Measurement = { bytesSaved: BytesSaved; sharedWith: string[] } | { error: string };
 
-type BundleStats = {
+export type BundleStats = {
   gzip: number;
   minified: number;
   /** Minified bytes each input contributes. */
@@ -41,8 +43,29 @@ const EMPTY_BUNDLE: BundleStats = {
   pulledInBy: new Map(),
 };
 
-/** Bundles kept per run; an editor's ESLint process measures every edit, so this is bounded. */
+/**
+ * Bundles kept for the process (shared by runs, so `--watch` and an editor's ESLint process only
+ * rebundle what changed); bounded, since they measure every edit.
+ */
 const CACHE_LIMIT = 500;
+/** Each bundle with the files esbuild read for it, so an edit to an imported file rebuilds it. */
+const bundleCache = new Map<string, { stats: BundleStats; inputs: InputStamp[] }>();
+type InputStamp = { file: string; mtimeMs: number; size: number };
+
+function stamp(file: string): InputStamp | undefined {
+  try {
+    const { mtimeMs, size } = statSync(file);
+    return { file, mtimeMs, size };
+  } catch {
+    return undefined;
+  }
+}
+
+const unchanged = (inputs: readonly InputStamp[]) =>
+  inputs.every((i) => {
+    const now = stamp(i.file);
+    return now !== undefined && now.mtimeMs === i.mtimeMs && now.size === i.size;
+  });
 
 /**
  * Imports that ship no client JS (or not enough to matter for the estimate). esbuild matches the
@@ -84,7 +107,6 @@ const EMPTY_LOADERS = [
  * Synchronous, so the CLI and the ESLint rule (which can't await) share it.
  */
 export class BundleMeasurer {
-  private readonly cache = new Map<string, BundleStats | { error: string }>();
   private readonly configFile: string | undefined;
 
   constructor(
@@ -95,14 +117,20 @@ export class BundleMeasurer {
     this.configFile = tsconfig;
   }
 
-  private bundle(entry: { file: string; contents: string }): BundleStats | { error: string } {
+  /** One file bundled for the browser (cached by content), or why esbuild couldn't. */
+  bundle(entry: { file: string; contents: string }): BundleStats | { error: string } {
+    const externals = this.serverActionFiles();
     const key = createHash("sha256")
+      .update(this.configFile ?? "")
+      .update("\0")
+      .update(externals.join("\0"))
+      .update("\0")
       .update(entry.file)
       .update("\0")
       .update(entry.contents)
       .digest("hex");
-    const cached = this.cache.get(key);
-    if (cached) return cached;
+    const cached = bundleCache.get(key);
+    if (cached && unchanged(cached.inputs)) return cached.stats;
     const ext = path.extname(entry.file).slice(1);
     const loader = (["tsx", "ts", "jsx", "js"].includes(ext) ? ext : "tsx") as
       "tsx" | "ts" | "jsx" | "js";
@@ -123,36 +151,34 @@ export class BundleMeasurer {
       jsx: "automatic",
       logLevel: "silent",
       define: { "process.env.NODE_ENV": '"production"' },
-      external: [
-        "react",
-        "react/*",
-        "react-dom",
-        "react-dom/*",
-        "next",
-        "next/*",
-        ...this.serverActionFiles(),
-      ],
+      external: ["react", "react/*", "react-dom", "react-dom/*", "next", "next/*", ...externals],
       loader: Object.fromEntries(EMPTY_LOADERS.map((e) => [e, "empty" as const])),
       ...(this.configFile ? { tsconfig: this.configFile } : {}),
     };
-    let stats: BundleStats | { error: string };
+    let result;
     try {
-      const result = buildSync(options);
-      const output =
-        result.outputFiles?.find((f) => f.path.endsWith(".js")) ?? result.outputFiles?.[0];
-      stats = output
-        ? {
-            gzip: gzipSync(output.contents).length,
-            minified: output.contents.length,
-            inputs: inputBytes(result.metafile),
-            pulledInBy: packageOwners(result.metafile),
-          }
-        : { error: "esbuild produced no output" };
+      result = buildSync(options);
     } catch (error) {
-      stats = { error: describeBuildError(error) };
+      // Not cached: the failure may come from an imported file that gets fixed.
+      return { error: describeBuildError(error) };
     }
-    if (this.cache.size >= CACHE_LIMIT) this.cache.delete(this.cache.keys().next().value as string);
-    this.cache.set(key, stats);
+    const output =
+      result.outputFiles?.find((f) => f.path.endsWith(".js")) ?? result.outputFiles?.[0];
+    if (!output) return { error: "esbuild produced no output" };
+    const stats: BundleStats = {
+      gzip: gzipSync(output.contents).length,
+      minified: output.contents.length,
+      inputs: inputBytes(result.metafile),
+      pulledInBy: packageOwners(result.metafile),
+    };
+    // Inputs are relative to absWorkingDir; `<stdin>` is the entry itself, already in the key.
+    const inputs = Object.keys(result.metafile?.inputs ?? {})
+      .filter((input) => input !== "<stdin>" && !/^[\w-]+:/.test(input))
+      .map((input) => stamp(path.resolve(this.root, input)))
+      .filter((s): s is InputStamp => s !== undefined);
+    if (bundleCache.size >= CACHE_LIMIT)
+      bundleCache.delete(bundleCache.keys().next().value as string);
+    bundleCache.set(key, { stats, inputs });
     return stats;
   }
 
@@ -234,7 +260,10 @@ export class BundleMeasurer {
    * replaces their imports with small server-reference stubs; following them would pull in the
    * server code (database drivers, Node built-ins) and usually fail to bundle.
    */
+  private serverActions: string[] | undefined;
+
   private serverActionFiles(): string[] {
+    if (this.serverActions) return this.serverActions;
     const files: string[] = [];
     for (const node of this.graph.nodes.values()) {
       if (node.directive !== "use server") continue;
@@ -246,6 +275,7 @@ export class BundleMeasurer {
         // A file that vanished since the graph was built can't be imported either.
       }
     }
+    this.serverActions = files;
     return files;
   }
 }
@@ -272,7 +302,7 @@ function inputBytes(metafile: Metafile | undefined): Map<string, number> {
 }
 
 /** The package an esbuild input belongs to (`node_modules/.pnpm/x@1/node_modules/x/a.js` -> x). */
-function packageOfInput(input: string): string | undefined {
+export function packageOfInput(input: string): string | undefined {
   const marker = "node_modules/";
   const i = input.lastIndexOf(marker);
   return i === -1 ? undefined : packageNameOf(input.slice(i + marker.length));

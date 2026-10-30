@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -18,6 +18,11 @@ const DEFAULT_CONFIG: ResolvedConfig = {
   prettier: "auto",
   mongoose: { autoSerialize: false },
   removeUnusedDirectives: false,
+  outputExists: "skip",
+  rules: { clientOnlyImports: [], serverSafeExports: [], browserDependentCalls: [], warnings: [] },
+  check: {},
+  verify: { commands: [] },
+  projects: undefined,
 };
 
 const CONFIG_FILES = [
@@ -60,6 +65,59 @@ const KEYS: Record<keyof UserConfig, (v: unknown) => string | undefined> = {
     return undefined;
   },
   removeUnusedDirectives: (v) => (typeof v === "boolean" ? undefined : "must be a boolean"),
+  outputExists: (v) =>
+    v === "skip" || v === "alternate" ? undefined : 'must be "skip" or "alternate"',
+  projects: stringArray,
+  rules: (v) => {
+    if (typeof v !== "object" || v === null || Array.isArray(v)) return "must be an object";
+    const allowed = ["clientOnlyImports", "serverSafeExports", "browserDependentCalls", "warnings"];
+    for (const [k, val] of Object.entries(v)) {
+      if (!allowed.includes(k)) return `has an unknown key "${k}" (allowed: ${allowed.join(", ")})`;
+      if (k === "warnings") {
+        const ok =
+          Array.isArray(val) &&
+          val.every(
+            (w) =>
+              typeof w === "object" &&
+              w !== null &&
+              typeof (w as { call?: unknown }).call === "string" &&
+              typeof (w as { message?: unknown }).message === "string" &&
+              Object.keys(w).every((key) => key === "call" || key === "message"),
+          );
+        if (!ok) return "warnings must be an array of { call: string, message: string }";
+        continue;
+      }
+      if (stringArray(val)) return `${k} must be an array of strings`;
+      const bad = (val as string[]).find(
+        (e) => e.length === 0 || e.split("#").length > 2 || e.endsWith("#") || e.startsWith("#"),
+      );
+      if (bad !== undefined)
+        return `${k} has an invalid entry "${bad}" (use "package", "package#export" or a global like "performance.now")`;
+    }
+    return undefined;
+  },
+  check: (v) => {
+    if (typeof v !== "object" || v === null || Array.isArray(v)) return "must be an object";
+    const allowed = ["minSaving", "minRouteSaving", "maxRecoverable", "maxNewBoundaries"];
+    for (const [k, val] of Object.entries(v)) {
+      if (!allowed.includes(k)) return `has an unknown key "${k}" (allowed: ${allowed.join(", ")})`;
+      if (typeof val !== "number" || val < 0 || !Number.isFinite(val))
+        return `${k} must be a non-negative number`;
+      if (k === "maxNewBoundaries" && !Number.isInteger(val))
+        return "maxNewBoundaries must be a whole number";
+    }
+    return undefined;
+  },
+  verify: (v) => {
+    if (typeof v !== "object" || v === null || Array.isArray(v)) return "must be an object";
+    for (const k of Object.keys(v))
+      if (k !== "commands") return `has an unknown key "${k}" (allowed: commands)`;
+    const commands = (v as { commands?: unknown }).commands;
+    return Array.isArray(commands) &&
+      commands.every((c) => typeof c === "string" && c.trim() !== "")
+      ? undefined
+      : "commands must be an array of non-empty strings";
+  },
 };
 
 function stringArray(v: unknown): string | undefined {
@@ -89,13 +147,21 @@ export function validateConfig(value: unknown, source: string): UserConfig {
 }
 
 export function resolveConfig(...layers: (UserConfig | undefined)[]): ResolvedConfig {
-  const out: ResolvedConfig = { ...DEFAULT_CONFIG, mongoose: { ...DEFAULT_CONFIG.mongoose } };
+  const out: ResolvedConfig = {
+    ...DEFAULT_CONFIG,
+    mongoose: { ...DEFAULT_CONFIG.mongoose },
+    rules: { ...DEFAULT_CONFIG.rules },
+    check: { ...DEFAULT_CONFIG.check },
+    verify: { ...DEFAULT_CONFIG.verify },
+  };
   for (const layer of layers) {
     if (!layer) continue;
     for (const [key, value] of Object.entries(layer)) {
       if (value === undefined) continue;
       if (key === "mongoose")
         out.mongoose = { ...out.mongoose, ...(value as UserConfig["mongoose"]) };
+      else if (key === "rules") out.rules = { ...out.rules, ...(value as UserConfig["rules"]) };
+      else if (key === "check") out.check = { ...out.check, ...(value as UserConfig["check"]) };
       else (out as Record<string, unknown>)[key] = value;
     }
   }
@@ -158,7 +224,10 @@ export async function loadConfigFile(file: string): Promise<UserConfig> {
       rmSync(temp, { force: true });
     }
   } else {
-    raw = ((await import(pathToFileURL(file).href)) as { default?: unknown }).default;
+    // The mtime in the URL makes an edited config load again in a long-lived process (`--watch`);
+    // an unchanged one still comes from the module cache.
+    const url = `${pathToFileURL(file).href}?mtime=${statSync(file).mtimeMs}`;
+    raw = ((await import(url)) as { default?: unknown }).default;
   }
   return validateConfig(raw, rel);
 }

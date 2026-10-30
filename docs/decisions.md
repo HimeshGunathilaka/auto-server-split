@@ -627,3 +627,201 @@ escapes non-ASCII names (`"B\303\274cher.tsx"`), which then matched no file and 
 check without a word. Every command the reports print (an annotation's "Apply with", the markdown
 report's last line) quotes paths that need it and includes the changes the file needs and
 `--remove-unused-directives` when it removes a directive, so it works when pasted as is.
+
+## 1.0.3 — explainability, routes, workspaces, more splits
+
+### Module safety per export, and what "evaluates on the server" means
+
+A helper module with one client-only export made every caller of every other export client-only:
+`formatTitle` from a `utils.ts` that also exports `copyToClipboard()` (which reads `navigator`)
+kept the heading that called it in an island. Export-level safety splits the question in two.
+Importing a module from a Server Component evaluates all of it on the server, so the module first
+has to _evaluate_ there: its imports must be server-evaluable (a `"use client"` module is fine,
+it's a client reference) and the code that runs on import (outside function bodies) must not
+touch hooks, browser globals or client-only imports. Then only the declarations the export
+actually reaches (its own statement and the module-level declarations it uses, transitively) are
+checked for client-only code, env values and handlers. A re-export is followed to the module that
+declares the export.
+
+"Code that runs on import" is more than the statements outside function bodies. Module-level
+code can call a local function, an IIFE or a callback it passes to something else, a class's
+`extends` clause and static fields run when it's defined, and a later statement can attach a
+function to an exported object (`registry.href = () => window.location.href`). So only the bodies
+of function declarations, of functions assigned directly to a variable, and of class methods and
+instance members count as deferred. Any other function in module-level code is scanned as if it
+ran, and a local function or class that module-level code refers to is scanned whole.
+
+Import cycles are checked optimistically (a check already in progress is assumed safe), so a
+result that relied on that assumption about another check isn't cached until that check is done.
+Otherwise it could stay "safe" after the cycle turned out not to be. A Client Component that a
+barrel re-exports stays what it was before: a client reference when rendered as `<X />`.
+
+The evaluation rule isn't a guess. With Next.js 16.4.2 and Turbopack, a Server Component page that
+imports `formatTitle` from a module that also has `import { useState } from "react"` fails the
+build ("You're importing a module that depends on `useState` into a React Server Component
+module"), even though `formatTitle` doesn't use it. The same module with
+`import * as React from "react"` and `React.useState` inside an unused export, plus a function that
+reads `navigator`, builds and renders. So a named import of a client-only React API (or a
+client-only package) makes the module client-only as a whole; the per-export check only helps
+modules whose client-only code is inside function bodies. That's the common shape of a utilities
+file. The blog e2e app has such a module (`lib/share.ts`); its card keeps the formatted heading on
+the server and renders the same HTML and DOM.
+
+Imports of types are skipped, with or without `type`: they're erased before the module runs. The
+benchmark's starter blog has a `Link` wrapper with `import { AnchorHTMLAttributes } from "react"`,
+which mustn't make it client-only.
+
+### `memo()` and `forwardRef()` come off
+
+Both were skips (`hoc`). Unwrapping is provably transparent here because of a check the tool
+already makes: every importer of a split file is a Server Component that renders it as `<X />`.
+Such a component never re-renders on the client, which is the only thing `memo` affects, and
+never receives a ref, since a Server Component can't create or pass one. So `memo(f)` becomes `f`,
+and `forwardRef(f)` becomes `f` when `f` doesn't use its `ref` parameter (which is dropped). When
+`forwardRef<T, P>` typed the props through the call, `P` moves onto the parameter, or the server
+file would have an implicitly `any` parameter. Cases without a safe unwrap still skip, with a
+message that says which: a `ref` that's used, props typed only by `memo`'s type argument, a
+comparison function declared elsewhere (it would be left unused), and `const X = memo(Inner)`.
+
+Unwrapping removes only the wrapper's text. The function body keeps its bytes, including the
+indentation it had inside the call; with a formatted original, Prettier fixes that.
+
+### Effects that no element uses get an island that renders nothing
+
+A `useEffect` that syncs `document.title` uses no rendered state, so no island owned it and the
+file was skipped. Such statements now move to an island that renders `null`, added as the last
+child of the element the component returns. Ordering is the reason for that spot: React runs a
+component's effects after its descendants' effects, and a last child's effects after its earlier
+siblings'. The original component's effect ran after everything it rendered; the effects island,
+rendered after everything else in the component's tree, runs after all of it too, so the effect
+keeps its place relative to the children it was passed. It mounts and unmounts with the
+component, since it's always rendered with it.
+
+The component's own effects are a different matter: they used to run in declaration order, and
+an effect that moves with an island now runs in that island, before the effects island. So the
+effects island is only used when no island's effect was declared after the statements that move.
+Otherwise two effects that write the same thing (`document.title`) would swap, and the last write
+would win differently. Hooks known not to schedule effects (`useState`, `useMemo`...) don't
+count; a custom hook might, so it does.
+
+That only holds when there's one place to put it. With an early return, an island in the main
+branch wouldn't run in the other one. A component element (`<Layout>`) as the root would get a
+different `children` prop. Void elements, text-only elements (`<textarea>`, `<title>`, `<option>`),
+`<html>`/`<head>` and an element with `dangerouslySetInnerHTML` can't take a child. In those cases
+the file is still skipped, and the message says why. The blog e2e app has an effect that writes
+`document.body.dataset`, and the DOM after hydration is the same before and after the split.
+
+### A `let` and the assignments right after it act as one `const`
+
+Component bodies were limited to `const` declarations, function declarations, hook calls and early
+returns, so `let label = "Off"; if (on) label = "On";` skipped the whole file. The supported subset
+is the one where the variable is a value: a `let` followed directly by statements that only assign
+it (any assignment operator, in `if`/`else if`/`else` branches or blocks that do nothing else), and
+no other write anywhere in the component, including in callbacks. After those statements it never
+changes, so the declaration and its assignments form one unit with the same dependency, taint and
+move rules as a `const`, and they move or stay together. A hook called while computing it would be
+conditional, so it skips. Anything wider (loops, writes from handlers, interleaved statements)
+needs real control-flow analysis and still skips.
+
+### `X.client.tsx` already exists: optionally use another name
+
+Skipping `output-exists` stays the default, since the file is usually a hand-written client
+component next to the original and two similar names are confusing. With
+`outputExists: "alternate"`, the island goes into `X.island.client.tsx` (then `X.island2`,
+`X.island3`). The name is deterministic, so a second run proposes the same file, and it still ends
+in the suffix, so it's never scanned as a candidate. Merging into the existing file stays out of
+scope: it would mean editing a file the user wrote.
+
+### Declarative rules instead of more built-in lists
+
+Every package the built-in lists don't know is classified from its `package.json` (a React
+dependency means client-only unless its entry starts with `"use client"`), so a new UI library
+meant either a config entry or a release. `rules` generalises the package lists to exports and
+calls: `pkg#export` entries classify one export, `browserDependentCalls` adds calls to the set
+kept in islands like `Date.now()`, and `warnings` attaches a message to a call that moves to the
+server. Rules can only make the analysis stricter, or relax it for a package export the user
+vouches for; they can't make React, Next.js, Node built-ins or a `"use client"` entry point
+server-safe, since those classifications are facts rather than heuristics.
+
+### Routes come from the module graph; sizes from the bundles or Next's analyzer
+
+Project-wide estimates undercount: a dependency counts as still shipped if any client module
+imports it, even on routes that never load that module. Route-aware numbers need two things: which
+client modules each route loads, and how big each one is. The first comes from the module graph
+the tool already has. A route's entries are its page and the `layout`, `template`, `error`,
+`loading` and `not-found` files Next renders around it. Server Components are followed until a
+`"use client"` module, `import()`/`next/dynamic` make what they load lazy, and imports of
+`"use server"` modules are references, not code. After the changes, a changed file's imports are
+read from its new text and its island is a new client root.
+
+Sizes come from the esbuild bundles the estimate already builds (each module's share of its
+bundle's gzip size), or, given a snapshot, from Next.js's own analyzer. `next analyze export`
+(16.4) prints JSON Lines whose `part` records attribute compressed bytes to each source path per
+emitted file, and whose `group` records say which files a route loads up front (`bootstrap`,
+`render_dependent`) and which later (`async`). Only `[client-fs]/` JavaScript counts. Its
+`[project]/` paths are relative to the Turbopack root, which is often a monorepo or lockfile root
+above the app; it's found by checking where the project's files are, not assumed. The island files
+don't exist in a snapshot, so their size is always estimated. Running `next analyze` itself is
+left to the user: it compiles the app, and the tool doesn't run builds on its own. Given a
+directory, the tool only runs the project's own `next analyze export`, which reads a saved
+snapshot without building.
+
+On the blog e2e app, route `/` is estimated at 19.7 KB (esbuild) and 21 KB (analyzer), and
+measured at 18.5 KB less JavaScript downloaded after the split.
+
+### Explanations reuse the planner, not a second analysis
+
+`--explain` could have re-derived why a file is client from scratch. Instead, the island planner
+records its decisions as it makes them (anchors and their reasons, shared state, LCA growth,
+`.map()` hoisting, escape reads, slots, props), so the explanation is the analysis that produced
+the result, and can't drift from it. The chain that makes a module client code is the BFS parent
+chain the module graph already computes for client reachability, which is the shortest one.
+
+### Workspaces: one run per app, shared packages read from source
+
+A workspace run is a run per Next.js app, each with its own tsconfig, `next.config` and config
+file, and the results are prefixed with the app's path. A shared package isn't a run of its own,
+because its components can be imported by several apps and a run of one app can't see the
+others' importers: splitting there could break another app. It's still analysed from source:
+TypeScript resolves a workspace package through its `node_modules` symlink and marks it an
+external library import, but when the real path is project source outside `node_modules`, the
+program loaded it, and it's also the file a bundler loads (its `exports`, `module` or `main`
+entry, with no `react-server` export), the module graph now treats it as a project module. The
+last condition matters for packages whose `types` point at source while `main` is built output,
+often with a `"use client"` banner; those are judged by their `package.json`, like any package. A server-safe component in
+`packages/ui` can then stay on the server, instead of being client-only because the package
+depends on React.
+
+### Baselines and reports identify changes by fingerprint
+
+A baseline that lists paths reports a moved component as new. A change's fingerprint is its
+status, its component's name, its islands' names and root tags, and its components' source with
+whitespace collapsed, hashed. It contains no path or line numbers, so it survives moves and edits
+elsewhere in the file, and changes when the islands or the components do. The source keeps two
+different `Card`s with a `CardButton` apart. Baselines (version 2) store fingerprints, sizes and
+every `"use client"` file, and a change whose fingerprint matches an entry whose file is gone
+counts as baselined; `compare` matches a moved change the same way, each earlier entry once.
+Fingerprint-only matching is used only then, because two files can hold identical copies. SARIF
+uses it as `partialFingerprints` (a repeated fingerprint gets its occurrence number), so code
+scanning keeps an alert across line moves. Version 1 baselines still read.
+
+`--check` budgets are deliberately simple. Per-change thresholds (`minSaving`, `minRouteSaving`)
+narrow which changes fail. Budgets (`maxRecoverable`, `maxNewBoundaries`) add conditions, and on
+their own replace the any-change rule, because "fail only when we leave more than 20 KB on the
+table" is the point of setting one.
+
+### Verification runs only what you configure, when you ask
+
+Running the project's type checker, tests and build after a change is the strongest evidence
+short of e2e tests, but a codemod that executes commands on its own is surprising, and rollback
+would fight the user's git workflow. So `verify` is a separate command that runs the configured
+commands in order, records exit codes, durations and output tails, and can attach them to a JSON
+report. It doesn't run during `--write`, and it never undoes anything.
+
+### Watch mode re-runs; the incremental engine can wait
+
+`--watch` re-runs the analysis when a source file changes and prints only the results that
+differ. Each run builds a fresh project, which keeps results identical to a normal run, while the
+bundle cache is now shared by every run in the process, so only changed files are rebundled. An
+incremental engine (reusing the TypeScript program and graph across edits) is what an editor
+language server would need; it's a larger change than watch mode justifies on its own.

@@ -1,7 +1,6 @@
 import { ts } from "ts-morph";
 import type { ModuleGraph } from "../project/moduleGraph.js";
 import type { ComponentInfo } from "./components.js";
-import { componentDeclarationNode } from "./components.js";
 import { lineCol } from "./context.js";
 import { getModuleDirective, hasUseServerBody } from "./directives.js";
 import { forEachValueRef } from "./refs.js";
@@ -47,7 +46,7 @@ export function checkImporters(
   // prop name -> true while every JSX usage seen so far passes a Server Action for it.
   const actionUsage = new Map<string, boolean>();
   let sawSpread = false;
-  const componentDecls = new Set(components.map(componentDeclarationNode));
+  const componentDecls = new Set(components.flatMap((c) => c.declarations));
   const importers = new Set<string>();
   const queue = [file];
   const visited = new Set<string>([file]);

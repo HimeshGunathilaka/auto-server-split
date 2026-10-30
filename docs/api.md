@@ -1,11 +1,23 @@
 # API
 
 ```ts
-import { split, defineConfig, SKIP_CODES, SKIP_TITLES } from "auto-server-split";
+import {
+  split,
+  explain,
+  defineConfig,
+  ConfigError,
+  SnapshotError,
+  SKIP_CODES,
+  SKIP_TITLES,
+  WARNING_CODES,
+} from "auto-server-split";
 import type {
   SplitOptions,
   SplitResult,
   FileResult,
+  RouteSaving,
+  RunSummary,
+  Explanation,
   SkipCode,
   UserConfig,
 } from "auto-server-split";
@@ -13,26 +25,33 @@ import type {
 
 ## `split(options?: SplitOptions): Promise<SplitResult>`
 
-| Option         | Type                           | Default          | Meaning                                                                                                                                                     |
-| -------------- | ------------------------------ | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `root`         | `string`                       | `process.cwd()`  | Project root (where `tsconfig.json`/`jsconfig.json` lives). Without one, Next.js defaults are used and every source file under the root is loaded.          |
-| `paths`        | `string[]`                     | config `include` | Files or directories to consider, relative to `root`.                                                                                                       |
-| `only`         | `string[]`                     |                  | Narrows the targets (from `paths` or `include`) to these files, relative to `root`. The CLI's `--since` passes the files changed since a git ref.           |
-| `baseline`     | `string[]`                     |                  | Files to leave as they are, relative to `root`: not analysed, and size estimates don't assume they're split. The CLI's `--baseline` reads them from a file. |
-| `write`        | `boolean`                      | `false`          | Write the outputs. The API doesn't check git state; the CLI does.                                                                                           |
-| `config`       | `UserConfig`                   | `{}`             | Overrides the config file. Validated like a config file: unknown keys and invalid values reject with a `ConfigError`.                                       |
-| `configFile`   | `string`                       | auto             | Config file path relative to `root`.                                                                                                                        |
-| `noConfigFile` | `boolean`                      | `false`          | Ignore config files on disk.                                                                                                                                |
-| `measure`      | `boolean`                      | `true`           | Run the esbuild size measurement. When `false`, `bytesSaved` is omitted and `minBytesSaved` isn't applied.                                                  |
-| `iterate`      | `boolean`                      | `true`           | Repeat the analysis until nothing new can change (see [Passes](#passes)). `false` makes one pass.                                                           |
-| `onFile`       | `(result: FileResult) => void` |                  | Called as soon as each file is done. Changes are done only after every pass, since savings are estimated together; skips are reported as they're found.     |
+| Option            | Type                           | Default          | Meaning                                                                                                                                                                                                                                                                                                                                                                                |
+| ----------------- | ------------------------------ | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `root`            | `string`                       | `process.cwd()`  | Project root (where `tsconfig.json`/`jsconfig.json` lives). Without one, Next.js defaults are used and every source file under the root is loaded.                                                                                                                                                                                                                                     |
+| `paths`           | `string[]`                     | config `include` | Files or directories to consider, relative to `root`.                                                                                                                                                                                                                                                                                                                                  |
+| `only`            | `string[]`                     |                  | Narrows the targets (from `paths` or `include`) to these files, relative to `root`. The CLI's `--since` passes the files changed since a git ref.                                                                                                                                                                                                                                      |
+| `baseline`        | `string[]`                     |                  | Files to leave as they are, relative to `root`: not analysed, and size estimates don't assume they're split. The CLI's `--baseline` reads them from a file.                                                                                                                                                                                                                            |
+| `write`           | `boolean`                      | `false`          | Write the outputs. The API doesn't check git state; the CLI does.                                                                                                                                                                                                                                                                                                                      |
+| `config`          | `UserConfig`                   | `{}`             | Overrides the config file. Validated like a config file: unknown keys and invalid values reject with a `ConfigError`.                                                                                                                                                                                                                                                                  |
+| `configFile`      | `string`                       | auto             | Config file path relative to `root`.                                                                                                                                                                                                                                                                                                                                                   |
+| `noConfigFile`    | `boolean`                      | `false`          | Ignore config files on disk.                                                                                                                                                                                                                                                                                                                                                           |
+| `measure`         | `boolean`                      | `true`           | Run the esbuild size measurement. When `false`, `bytesSaved` is omitted and `minBytesSaved` isn't applied.                                                                                                                                                                                                                                                                             |
+| `iterate`         | `boolean`                      | `true`           | Repeat the analysis until nothing new can change (see [Passes](#passes)). `false` makes one pass.                                                                                                                                                                                                                                                                                      |
+| `onFile`          | `(result: FileResult) => void` |                  | Called as soon as each file is done. Changes are done only after every pass, since savings are estimated together; skips are reported as they're found.                                                                                                                                                                                                                                |
+| `routes`          | `boolean`                      | `true`           | Work out which App Router routes each change affects (see [Routes](#routes)).                                                                                                                                                                                                                                                                                                          |
+| `analyzeSnapshot` | `string`                       |                  | A Next.js analyzer snapshot to take route sizes from: the JSON Lines `next analyze export` prints, or a directory (the app, its `.next`, or `.next/diagnostics/analyze`) whose latest saved snapshot is exported with the project's own `next`. Rejects with a `SnapshotError` when it can't be read, or when it describes another project (none of its source files are in this one). |
 
 ```ts
-type SplitResult = { files: FileResult[] };
+type SplitResult = {
+  files: FileResult[];
+  routes?: RouteSaving[]; // per App Router route (see Routes)
+  summary: RunSummary; // the run's numbers
+};
 
 type FileResult = {
   file: string; // relative to root
   status: "split" | "directive-removed" | "skipped" | "unchanged";
+  fingerprint?: string; // on changes: identifies the change without its path or lines
   skipped?: { code: SkipCode; message: string; location?: { line: number; column: number } };
   islands: Array<{
     name: string; // e.g. "PostCardButton"
@@ -40,6 +59,7 @@ type FileResult = {
     props: string[]; // props passed from the server (including "children"/"slotN" for donut slots)
     line: number;
     moved?: boolean; // a whole helper component moved into the island file
+    effects?: boolean; // renders nothing, runs effects no element uses (rootTag "effects")
   }>;
   staticRatio: number; // share of JSX nodes that stay on the server, 0..1
   bytesSaved?: { isolated: number; conservative: number; sharedWith?: string[] }; // gzip bytes
@@ -50,6 +70,11 @@ type FileResult = {
     location?: { line: number; column: number };
   }>; // on changes only
   requires?: string[]; // changes a later pass found this one after; apply them in the same run
+  routes?: Array<{
+    route: string; // "/", "/blog/[slug]"
+    load: "initial" | "lazy"; // loaded with the page, or later (next/dynamic, import())
+    bytesSaved?: number; // gzip bytes this change saves on the route (when measuring)
+  }>;
   diff: string; // unified diff for every touched/created file
   outputs: Record<string, string>; // relative path -> new content
 };
@@ -67,7 +92,7 @@ With measuring on, every split has `bytesSaved`, except when esbuild can't bundl
 the file is skipped as `measure-failed`, or, with `minBytesSaved: 0`, split with `measureError` set.
 A removed directive always gets `bytesSaved` or `measureError`: thresholds don't apply to it.
 
-`npx auto-server-split --json` prints the same `{ files }` object. One split and one skip
+`npx auto-server-split --json` prints the same `{ files, routes, summary }` object. One split and one skip
 (`diff` and `outputs` shortened):
 
 ```json
@@ -109,6 +134,81 @@ just the file) or `"skipped"`. `"unchanged"` is part of the type but isn't produ
 version. Unexpected errors are reported per file as `internal-error` and never reject the promise. Invalid configuration (in a config file or in the
 `config` option) rejects with a `ConfigError`.
 
+`fingerprint` is the kind of change, the main component, its islands' names and its components'
+source (whitespace aside), hashed: it stays the same when the file moves or other code shifts it,
+and changes when the islands or the components do. Baselines, SARIF (`partialFingerprints`), GitLab
+reports and `compare` use it.
+
+An island with `effects: true` holds client statements that no element uses and no island owns,
+such as a `useEffect` that sets `document.title`. It renders `null` and is added as the last child
+of the element the component returns, so its effects run after its siblings', where the component's
+own effects ran before (see [decisions.md](decisions.md)).
+
+## Routes
+
+With an `app/` (or `src/app/`) directory, each change lists the App Router routes that load the
+file, and `SplitResult.routes` sums them up per route:
+
+```ts
+type RouteSaving = {
+  route: string;
+  files: string[]; // this run's changes on the route
+  initialSaved?: number; // gzip bytes the route stops loading with the page
+  lazySaved?: number; // ...and later, in chunks next/dynamic or import() load
+  initialBytes?: number; // the route's initial client JavaScript, from an analyzer snapshot
+  source?: "next-analyze" | "esbuild";
+};
+```
+
+A route's client modules are found by following its page and the `layout`, `template`, `error`,
+`loading` and `not-found` files around it through Server Components until a `"use client"` module,
+then everything that imports. A module a change removes from a route is one no remaining client
+module on that route imports; a module several changes remove is divided between them. A route's
+total subtracts the island files it loads instead, while each change's own saving on the route is
+never below 0, so a change whose island outweighs what it removes makes the total smaller than the
+per-change savings added up. Sizes are each module's share of the esbuild bundles
+the estimate already builds, or, with `analyzeSnapshot`, the gzip bytes Next.js's analyzer
+attributes to that module on that route (the island files themselves are always estimated). Like
+`bytesSaved`, route savings assume the other proposed changes are applied too.
+
+## `explain(options: SplitOptions & { file: string }): Promise<Explanation>`
+
+Runs the same analysis as `split()` and explains one file (relative to `root`):
+
+```ts
+type Explanation = {
+  file: string;
+  kind: "client-boundary" | "client" | "server" | "outside-project";
+  directive?: "use client" | "use server";
+  clientChain?: string[]; // client code: the shortest import chain from the "use client" module
+  renderedBy?: Array<{ file: string; line: number }>; // Server Components that render the boundary
+  serverUse?: {
+    // no directive: could a Server Component import it, as a whole and per export?
+    safe: boolean;
+    reason?: string;
+    exports: Array<{ name: string; safe: boolean; reason?: string; clientReference?: boolean }>; // clientReference: a re-exported Client Component
+  };
+  result?: FileResult; // a "use client" file: the run's result
+  components?: Array<{
+    name: string;
+    anchors: Array<{ element: string; line: number; reasons: string[] }>; // what needs the client
+    steps: string[]; // how the islands were formed: merges, growth, slots, props
+  }>;
+  imports?: Array<{
+    module: string; // package name or project path
+    fate: "island" | "leaves-client" | "still-shipped" | "server-only";
+  }>;
+  suggestion?: string; // what to do about a skip
+};
+```
+
+## `RunSummary`
+
+`SplitResult.summary` (and the `summary` of `--json`): `filesScanned`, `useClientFiles`,
+`changes` (`splits` + `directivesRemoved`), `islands`, `skipped`, `skippedByCode`, `bytesSaved`
+(the changes together, when measured), `unmeasured`, `warnings` (count per code), `routes` (how
+many are affected) and `bestRoute` (`{ route, initialSaved }`).
+
 ## Passes
 
 A change can make another file changeable: a component that only a client component imports is
@@ -126,8 +226,8 @@ importers client modules); apply them in the same run. When one of those is drop
 `minBytesSaved`), the change is dropped too and reported with its `imported-by-client` skip, whose
 message names the change it needs.
 
-The CLI's `--interactive` mode makes one pass, since you accept each change separately; run it
-again for the rest. The `rerun()` function it uses needs a single-pass run.
+The CLI's `--interactive` mode makes one pass (`iterate: false`), since you accept each change
+separately and a rename re-runs that file alone; run it again for the rest.
 
 ## Warnings
 
@@ -146,6 +246,8 @@ lists the codes; like skip codes, they're stable.
   most five per file; the last one counts the rest.
 - `ignore-outside-header`: an `auto-server-split-ignore` comment that isn't in the file header (for
   example above the component, after the imports), so it doesn't apply.
+- `rule`: a call named in the config's [`rules.warnings`](configuration.md#rules) runs on the
+  server after the change; the message is yours. At most five per file.
 
 ## `SKIP_CODES` and `SKIP_TITLES`
 

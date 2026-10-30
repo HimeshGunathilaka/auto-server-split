@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { ts } from "ts-morph";
 import type { BindingClass, FrameworkAdapter, FrameworkModuleRule } from "../analysis/framework.js";
@@ -135,4 +135,77 @@ export function couldBecomeRoute(root: string, absPath: string, pageExtensions: 
   return pageExtensions.some((ext) =>
     NEXT_ROUTE_FILE_BASENAMES.some((name) => base === `${name}.${ext}`),
   );
+}
+
+/** An App Router route and the files Next.js renders for it. */
+export type AppRoute = {
+  /** The route as `next build` and the analyzer name it: `/`, `/blog/[slug]`. */
+  route: string;
+  /**
+   * The page and what wraps it, outermost first: root to leaf, every segment's `layout`,
+   * `template`, `error`, `loading` and `not-found` files, then the `page`.
+   */
+  entries: string[];
+};
+
+/** Files each segment can wrap its children in. */
+const SEGMENT_FILES = ["layout", "template", "error", "loading", "not-found"];
+
+/**
+ * The App Router routes under `app/` or `src/app/` that render a page (route handlers ship no client
+ * JavaScript). Route groups (`(shop)`) and parallel-route slots (`@modal`) don't appear in the
+ * route; private folders (`_components`) and intercepting routes (`(.)photo`) aren't routes.
+ */
+export function findAppRoutes(root: string, pageExtensions: string[]): AppRoute[] {
+  const appDir = ["app", "src/app"].map((d) => path.join(root, d)).find((d) => existsSync(d));
+  if (!appDir) return [];
+  const exts = pageExtensions.map((e) => `.${e}`);
+  const routes = new Map<string, Set<string>>();
+  const fileIn = (dir: string, names: string[]) => {
+    const found: string[] = [];
+    for (const name of names) {
+      for (const ext of exts) {
+        const candidate = path.join(dir, `${name}${ext}`);
+        if (existsSync(candidate)) {
+          found.push(candidate);
+          break;
+        }
+      }
+    }
+    return found;
+  };
+  const visit = (dir: string, segments: string[], wrappers: string[]): void => {
+    const here = [...wrappers, ...fileIn(dir, SEGMENT_FILES)];
+    const [page] = fileIn(dir, ["page"]);
+    if (page) {
+      const route = `/${segments.join("/")}`;
+      const entries = routes.get(route) ?? new Set<string>();
+      for (const f of [...here, page]) entries.add(f);
+      routes.set(route, entries);
+    }
+    let names: string[];
+    try {
+      names = readdirSync(dir, { withFileTypes: true })
+        // Intercepting routes (`(.)photo`) render another route's page: not routes of their own.
+        .filter(
+          (e) =>
+            e.isDirectory() &&
+            !e.name.startsWith("_") &&
+            !e.name.startsWith(".") &&
+            !e.name.startsWith("(."),
+        )
+        .map((e) => e.name)
+        .sort();
+    } catch {
+      return;
+    }
+    for (const name of names) {
+      const hidden = /^\(.*\)$/.test(name) || name.startsWith("@");
+      visit(path.join(dir, name), hidden ? segments : [...segments, name], here);
+    }
+  };
+  visit(appDir, [], fileIn(appDir, ["global-error"]));
+  return [...routes]
+    .map(([route, entries]) => ({ route, entries: [...entries] }))
+    .sort((a, b) => a.route.localeCompare(b.route));
 }
